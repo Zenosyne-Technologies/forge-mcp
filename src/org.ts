@@ -10,6 +10,17 @@ import type { Envelope, Organization } from "./types.js";
 const SLUG_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 
 /**
+ * How many organization names the "which one?" error will actually print.
+ *
+ * The list exists so an operator can copy one into FORGE_ORG, and nobody copies from
+ * a list of two hundred. Forge decides how many entries come back, so without a cap
+ * an account with twenty thousand organizations turns one cached error into a
+ * hundreds-of-kilobyte string that is replayed into the agent's context on every
+ * later tool call. The total is still reported; only the enumeration is bounded.
+ */
+const MAX_LISTED_ORGANIZATIONS = 10;
+
+/**
  * Resolves the organization slug every API path requires.
  *
  * Resolution is LAZY — deliberately not done during MCP initialize. Resolving at
@@ -85,18 +96,26 @@ export class OrganizationResolver {
         // usable are omitted rather than printed as a placeholder — an operator
         // cannot put "unknown" in FORGE_ORG, so saying so plainly is the only
         // actionable answer.
+        //
+        // Both the slug and the id are chosen by whoever owns the organization, and
+        // this message is read by a model that also holds `reboot_server` and
+        // `update_deployment_script`. So the name is FILTERED, not escaped: the only
+        // values printed are ones that pass the same predicate FORGE_ORG must pass.
+        // A value that fails it could never have been an answer to "set FORGE_ORG to
+        // one of these" anyway, and filtering to a known-good shape leaves nothing
+        // for a payload — newlines, punctuation, instructions — to survive in.
         const identified = orgs
           .map((o) => o?.attributes?.slug ?? o?.id)
           .filter(
             (name): name is string =>
-              typeof name === "string" && name.trim() !== "",
+              typeof name === "string" && isUsableInPath(name),
           );
         const detail =
           identified.length === orgs.length
-            ? ` (${identified.join(", ")})`
+            ? ` (${renderNames(identified)})`
             : identified.length === 0
-              ? ", none of which could be identified from Forge's response — no entry carried a slug or an id"
-              : `, only ${identified.length} of which could be identified from Forge's response (${identified.join(", ")})`;
+              ? ", none of which could be identified from Forge's response — no entry carried a slug or an id this server can place in an API path"
+              : `, only ${identified.length} of which could be identified from Forge's response (${renderNames(identified)})`;
         throw new ForgeError(
           `This token can see ${orgs.length} organizations${detail}. Set FORGE_ORG to the slug you want this server to act on.`,
         );
@@ -135,4 +154,17 @@ function isSettledFailure(error: unknown): boolean {
 /** Anything that could change the shape of the path it is spliced into is rejected. */
 function isUsableInPath(slug: string): boolean {
   return SLUG_PATTERN.test(slug) && !slug.includes("..");
+}
+
+/**
+ * Prints at most `MAX_LISTED_ORGANIZATIONS` names and counts the rest.
+ *
+ * `isUsableInPath` already bounds one name to 100 characters, so capping the count
+ * is what bounds the whole string — together they keep this error a fixed size no
+ * matter what Forge returns.
+ */
+function renderNames(names: string[]): string {
+  if (names.length <= MAX_LISTED_ORGANIZATIONS) return names.join(", ");
+  const shown = names.slice(0, MAX_LISTED_ORGANIZATIONS).join(", ");
+  return `${shown}, and ${names.length - MAX_LISTED_ORGANIZATIONS} more`;
 }
