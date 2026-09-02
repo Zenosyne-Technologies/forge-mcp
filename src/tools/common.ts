@@ -147,13 +147,106 @@ export interface PageInfo {
 }
 
 /** Reads the pagination cursor out of a list response's `meta`. */
-export function readPageInfo(meta: unknown): PageInfo {
+function readPageInfo(meta: unknown): PageInfo {
   const raw = record(meta)?.["next_cursor"];
   const present = typeof raw === "string" && raw.length > 0;
   return {
     next_cursor: present && CURSOR_PATTERN.test(raw) ? raw : null,
     has_more: present,
   };
+}
+
+/** A page of projected rows, and everything a caller needs to read it correctly. */
+export interface PagedRows<T> extends PageInfo {
+  rows: T[];
+  count: number;
+  /**
+   * Anything about THIS page a caller would otherwise have to infer, said in
+   * words. Empty on an unremarkable page — which is the common case, so the
+   * presence of an entry is itself the signal.
+   */
+  notes: string[];
+}
+
+/**
+ * Assembles the pagination half of a list result.
+ *
+ * Two things go wrong quietly here, and neither is left to inference:
+ *
+ * 1. `page_size` bounds the REQUEST. Forge decides what it actually sends, and a
+ *    500-row answer to a request for 50 is a third of a megabyte spent in the
+ *    agent's context without anyone asking for it. The overflow is dropped here,
+ *    after projection — and dropping rows in silence is precisely the failure this
+ *    function exists to prevent, so the note states how many went and that paging
+ *    will not bring them back.
+ * 2. `has_more: true` with `next_cursor: null` is internally honest and externally
+ *    unreadable: two fields a model was never told to compare, whose combination
+ *    means "rows are missing and cannot be fetched". It is spelled out instead of
+ *    being left as a puzzle whose wrong answer is "that was everything".
+ */
+export function paginate<T>(
+  rows: T[],
+  page: PageArgs,
+  meta: unknown,
+): PagedRows<T> {
+  const upstream = readPageInfo(meta);
+  const notes: string[] = [];
+
+  const kept = rows.length > page.pageSize ? rows.slice(0, page.pageSize) : rows;
+  const dropped = rows.length - kept.length;
+  // Rows were dropped, so rows certainly remain — whatever `meta` claimed.
+  const has_more = upstream.has_more || dropped > 0;
+
+  if (dropped > 0) {
+    notes.push(
+      `Forge ignored page_size: it returned ${rows.length} rows for a request of ${page.pageSize}. Only the first ${kept.length} are shown and ${dropped} were dropped to keep this result a readable size. next_cursor, where present, continues after all ${rows.length} rows, so the dropped rows are not reachable by paging.`,
+    );
+  } else if (has_more && upstream.next_cursor === null) {
+    notes.push(
+      "More rows exist, but Forge did not return a pagination cursor this server can use, so there is no way to ask for them. Treat this page as incomplete rather than as the whole list.",
+    );
+  }
+
+  return {
+    rows: kept,
+    count: kept.length,
+    next_cursor: upstream.next_cursor,
+    has_more,
+    notes,
+  };
+}
+
+/**
+ * The `data` array a list response must carry.
+ *
+ * A payload that is not what this server understands must not read as "the account
+ * has none" — an agent told there are no servers stops looking, and a `data` that
+ * arrived as an object or a string is not evidence of an empty account. The same
+ * distinction `src/org.ts` draws for a malformed `/orgs` payload: an empty ARRAY is
+ * the answer "none", anything else is the absence of an answer.
+ *
+ * Nothing from the response is quoted back — a malformed body is exactly where
+ * text written to be read by a model would be planted.
+ */
+export function requireList(value: unknown, resource: string): unknown[] {
+  if (Array.isArray(value)) return value;
+  throw new ForgeError(
+    `Forge's response carried no ${resource} list, so this call cannot say whether any ${resource} exist. This is not the same as an empty account — do not report that there are none. Retry once; if it persists, the Forge API response shape has changed and this server needs updating.`,
+  );
+}
+
+/** The single resource object a detail response must carry. Same reasoning. */
+export function requireResource(
+  value: unknown,
+  resource: string,
+): Record<string, unknown> {
+  const resource_record = record(value);
+  if (resource_record === undefined) {
+    throw new ForgeError(
+      `Forge's response carried no ${resource} record, so this call cannot describe the ${resource}. Do not report its fields as empty or unknown. Retry once; if it persists, the Forge API response shape has changed and this server needs updating.`,
+    );
+  }
+  return resource_record;
 }
 
 /* ------------------------------------------------------------------ coercion */

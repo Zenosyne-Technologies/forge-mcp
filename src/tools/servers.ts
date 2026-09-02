@@ -3,12 +3,13 @@ import type { Envelope, ListEnvelope, Server } from "../types.js";
 import type { ToolContext, ToolDefinition } from "./index.js";
 import {
   flag,
-  items,
   pageShape,
+  paginate,
   readPageArgs,
-  readPageInfo,
   record,
+  requireList,
   requirePathSegment,
+  requireResource,
   text,
   whole,
   withPageQuery,
@@ -90,7 +91,7 @@ export const listServersTool: ToolDefinition = {
   name: "list_servers",
   title: "List servers",
   description:
-    "Lists the Forge servers in this organization with the id every other server tool needs, plus name, provider, region, IP, PHP version and readiness. Use it to answer 'which servers exist' or to find a server id; use get_server once you have one. Returns one page: if next_cursor is not null, more servers exist and passing it back as cursor fetches the next page.",
+    "Lists the Forge servers in this organization, one page per call. Each row is the whole server record: the id every other server tool needs, plus name, provider, region, IPs, PHP version, readiness and connection, database, Redis and OPcache status. Use it to answer 'which servers exist' or to find a server id. has_more says whether further rows exist; pass next_cursor back as cursor to fetch them, and read notes whenever it is non-empty.",
   inputSchema: pageShape,
   annotations: {
     readOnlyHint: true,
@@ -108,8 +109,11 @@ export const listServersTool: ToolDefinition = {
       withPageQuery(`/orgs/${org}/servers`, page),
     );
 
-    const servers = items(response?.data).map(projectServer);
-    return { servers, count: servers.length, ...readPageInfo(response?.meta) };
+    // A `data` that is not a list is not an empty account: `requireList` refuses to
+    // let a shape this server does not understand read as "there are no servers".
+    const projected = requireList(response?.data, "server").map(projectServer);
+    const { rows, ...page_info } = paginate(projected, page, response?.meta);
+    return { servers: rows, ...page_info };
   },
 };
 
@@ -117,7 +121,7 @@ export const getServerTool: ToolDefinition = {
   name: "get_server",
   title: "Get server",
   description:
-    "Returns one Forge server by id, including its connection, database, Redis and OPcache status — the detail list_servers summarises. Use it when you already have a server id and need that server's current state; call list_servers first if you do not.",
+    "Fetches one Forge server by id without enumerating the organization. It returns exactly the row list_servers returns for that server — the same fields, no additional detail — so reach for it when you already hold a server id, and for list_servers when you need to find one or to see several at once.",
   inputSchema: {
     server_id: z
       .string()
@@ -137,6 +141,8 @@ export const getServerTool: ToolDefinition = {
       `/orgs/${org}/servers/${serverId}`,
     );
 
-    return { server: projectServer(response?.data) };
+    // Same refusal as the list tools: a payload this server cannot read must not be
+    // rendered as a server whose every field happens to be null.
+    return { server: projectServer(requireResource(response?.data, "server")) };
   },
 };

@@ -3,11 +3,11 @@ import type { ListEnvelope, Site } from "../types.js";
 import type { ToolContext, ToolDefinition } from "./index.js";
 import {
   flag,
-  items,
   pageShape,
+  paginate,
   readPageArgs,
-  readPageInfo,
   record,
+  requireList,
   requirePathSegment,
   text,
   textList,
@@ -98,7 +98,7 @@ export const listSitesTool: ToolDefinition = {
   name: "list_sites",
   title: "List sites",
   description:
-    "Lists the sites hosted on one Forge server: site id, domain, URL, app type, repository provider/branch and deployment status. Use it to find a site id, or to see what a server actually serves; get the server id from list_servers first. Returns one page: if next_cursor is not null, more sites exist and passing it back as cursor fetches the next page.",
+    "Lists the sites hosted on one Forge server, one page per call: site id, domain, URL, app type, repository provider/branch and deployment status. Use it to find a site id, or to see what a server actually serves; get the server id from list_servers first. has_more says whether further rows exist; pass next_cursor back as cursor to fetch them, and read notes whenever it is non-empty.",
   inputSchema: {
     server_id: z
       .string()
@@ -121,7 +121,9 @@ export const listSitesTool: ToolDefinition = {
       withPageQuery(`/orgs/${org}/servers/${serverId}/sites`, page),
     );
 
-    const sites = items(response?.data).map(projectSite);
-    return { sites, count: sites.length, ...readPageInfo(response?.meta) };
+    // A `data` that is not a list is not a server with no sites.
+    const projected = requireList(response?.data, "site").map(projectSite);
+    const { rows, ...page_info } = paginate(projected, page, response?.meta);
+    return { sites: rows, ...page_info };
   },
 };
