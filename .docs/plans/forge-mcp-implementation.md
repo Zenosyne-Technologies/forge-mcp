@@ -136,9 +136,33 @@ in `.docs/handbooks/developer/read-tools.md` and `.docs/handbooks/admin/read-too
 **Result (issue #16):** the error-rendering path built alongside stage 1 (`describeHttpFailure`
 and `quoteUpstream` in `src/errors.ts`, the token argument threaded through `src/client.ts`, and
 the JSON-quoted error path in `src/index.ts`) is hardened — every fragment quoted from Forge is
-now redacted of the API token, stripped of control and format characters, bounded to 200
+now redacted of the API token, reduced to a single line of visible characters, bounded to 200
 characters and labelled as reported data before it reaches the agent. Documented in
 `.docs/handbooks/developer/error-rendering.md` and `.docs/handbooks/admin/error-messages.md`.
+(The character rule this line and the original commit described — a `Cc`/`Cf` blacklist — was
+replaced by issue #26 below; this line now describes the current, allowlist-based behavior.)
+
+**Result (issue #26):** the `Cc`/`Cf` blacklist behind issue #16 missed variation selectors and
+the U+E0000 tag block entirely — a proof of concept smuggled 56 bytes of hidden ASCII
+instructing `reboot_server` behind a visible transcript that read as an ordinary 404 (#22), and
+the same blacklist was never applied on the success path at all, so an ordinary server or site
+listing carried the identical exposure across a surface three orders of magnitude larger (#25).
+Both paths now import one allowlist, `neutraliseUpstreamText` in the new `src/upstream-text.ts`
+— a character survives only if it is a letter, digit, punctuation, symbol or mark, with
+`Default_Ignorable_Code_Point` (plus U+2800) denied inside those categories and deleted rather
+than spaced so a Devanagari, Thai or Arabic word does not fracture — and a test walks `src/`
+recursively to enforce that this is the only definition. Alongside it: the output budget is now
+measured against the exact pretty-printed document `src/index.ts` emits rather than an estimate
+of it, closing a bound that had silently admitted 109,199 characters against a declared 60,000
+(#24); a timeout on a write is now documented as an unknown outcome rather than a failed,
+freely-retryable one, since a write Forge received and executed can still time out on the way
+back (#20); and token redaction in `quoteUpstream` now runs a second time, after neutralisation,
+because deleting an invisible character can reassemble a token that was split around it, in
+either direction — a real gap found while closing #22/#25, with no separate issue filed.
+Documented in `.docs/handbooks/developer/error-rendering.md`,
+`.docs/handbooks/developer/read-tools.md`, `.docs/handbooks/admin/read-tools.md`, and (the
+timeout correction) `.docs/handbooks/admin/configuration.md` and
+`.docs/handbooks/developer/organization-resolution.md`.
 
 ## Testing
 

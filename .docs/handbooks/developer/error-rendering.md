@@ -2,8 +2,8 @@
 doc: Upstream error rendering
 type: handbook
 status: active
-summary: How describeHttpFailure and quoteUpstream turn a Forge HTTP failure into text safe to hand an agent — the upstream token stripped, control and format characters removed, the fragment bounded to 200 characters and labelled as reported data, before the whole message is JSON-quoted onto the tool result.
-keywords: [errors, forge, upstream, prompt-injection, redaction, truncation, quoteUpstream, describeHttpFailure, renderToolFailure, extractMessage]
+summary: How describeHttpFailure and quoteUpstream turn a Forge HTTP failure into text safe to hand an agent — the upstream token stripped, the text reduced to the shared visible-character allowlist (letters, digits, punctuation, symbols and marks; a zero-width denial is deleted, everything else denied becomes a space), the fragment bounded to 200 characters and labelled as reported data, before the whole message is JSON-quoted onto the tool result.
+keywords: [errors, forge, upstream, prompt-injection, redaction, truncation, quoteUpstream, describeHttpFailure, renderToolFailure, extractMessage, allowlist, neutraliseUpstreamText]
 level: code
 audience: developer
 module: error rendering
@@ -11,6 +11,7 @@ sources:
   - src/errors.ts
   - src/client.ts
   - src/index.ts
+  - src/upstream-text.ts
 related:
   - "[[organization-resolution]]"
 created: 2026-09-02

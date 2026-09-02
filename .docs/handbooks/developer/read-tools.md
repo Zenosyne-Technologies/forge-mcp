@@ -2,8 +2,8 @@
 doc: The read-tool contract
 type: handbook
 status: active
-summary: The whitelist projection, cursor pagination, total-output budget and malformed-response guards shared by every read tool — and how ServerView/SiteView differ from Forge's own attribute shapes.
-keywords: [tools, projection, whitelist, pagination, cursor, budget, annotations, readOnlyHint, ServerView, SiteView, list_servers, get_server, list_sites]
+summary: The whitelist projection and its shared visible-text allowlist, cursor pagination, total-output budget and malformed-response guards shared by every read tool — and how ServerView/SiteView differ from Forge's own attribute shapes.
+keywords: [tools, projection, whitelist, pagination, cursor, budget, annotations, readOnlyHint, ServerView, SiteView, list_servers, get_server, list_sites, neutraliseUpstreamText, allowlist]
 level: code
 audience: developer
 module: read tools
@@ -13,6 +13,7 @@ sources:
   - src/tools/common.ts
   - src/tools/index.ts
   - src/types.ts
+  - src/upstream-text.ts
 related:
   - "[[organization-resolution]]"
   - "[[error-rendering]]"
@@ -33,6 +34,8 @@ All three tools carry `readOnlyHint: true`, `destructiveHint: false`, `idempoten
 ## Projection is a whitelist, not a filter
 
 `projectServer` and `projectSite` each copy named fields from `resource.attributes` through a coercer (`text`, `url`, `flag`, `whole`, `textList` — `src/tools/common.ts`); nothing about Forge's response is passed through structurally. An attribute Forge adds later reaches no tool output because nothing copies it — there is no denylist to update. `record()` also refuses to treat an array or a primitive as a resource, so a malformed `attributes` degrades to `{}` rather than a thrown type error inside a tool handler.
+
+`text` and `url` also run every value through `neutraliseUpstreamText` (`src/upstream-text.ts`) before bounding it — the same shared allowlist [[error-rendering]] applies to a quoted Forge error, extended here to the far larger surface of an ordinary listing (tens of thousands of characters across a page, against two hundred on an error). A server name, a site domain, a git branch survive as letters, digits, punctuation, symbols and marks; a character the allowlist denies is deleted if it drew nothing on screen or turned into a single space if it occupied width. See [[error-rendering]] for why the rule is an allowlist and what it costs.
 
 Six fields are withheld by the same mechanism, deliberately: `local_public_key` and `credential_id` (server credential material), `identifier` (provider bookkeeping an agent cannot act on), `deployment_url` (the deploy-trigger secret — anyone holding it can deploy the site), and `deployment_script` / `shared_paths` (unbounded operator-authored blobs that belong to a future single-site tool, not a fifty-row listing).
 
