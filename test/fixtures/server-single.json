@@ -1,0 +1,36 @@
+{
+  "data": {
+    "id": "1001",
+    "type": "servers",
+    "attributes": {
+      "id": 1001,
+      "credential_id": 7,
+      "name": "app-prod-01",
+      "slug": "app-prod-01",
+      "type": "app",
+      "ubuntu_version": "24.04",
+      "ssh_port": 2222,
+      "provider": "digitalocean",
+      "identifier": "do-4711",
+      "size": "s-2vcpu-4gb",
+      "region": "ams3",
+      "php_version": "php84",
+      "php_cli_version": "php84",
+      "opcache_status": "enabled",
+      "database_type": "mysql8",
+      "db_status": "installed",
+      "redis_status": "installed",
+      "ip_address": "203.0.113.10",
+      "private_ip_address": "10.114.0.4",
+      "revoked": false,
+      "created_at": "2025-07-29T09:00:00Z",
+      "updated_at": "2025-07-30T09:00:00Z",
+      "connection_status": "connected",
+      "timezone": "UTC",
+      "local_public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABexamplekeymaterial",
+      "is_ready": true
+    },
+    "relationships": { "tags": { "data": [] } },
+    "links": { "self": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001" }
+  }
+}

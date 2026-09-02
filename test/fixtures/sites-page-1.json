@@ -1,0 +1,97 @@
+{
+  "data": [
+    {
+      "id": "5001",
+      "type": "sites",
+      "attributes": {
+        "name": "zenosyne.tech",
+        "status": "installed",
+        "url": "https://zenosyne.tech",
+        "user": "forge",
+        "https": true,
+        "web_directory": "/public",
+        "root_directory": "/home/forge/zenosyne.tech",
+        "aliases": ["www.zenosyne.tech"],
+        "php_version": "php84",
+        "deployment_status": "finished",
+        "quick_deploy": true,
+        "isolated": false,
+        "shared_paths": { "storage": "/home/forge/zenosyne.tech/storage" },
+        "repository": {
+          "provider": "github",
+          "url": "Zenosyne-Technologies/site",
+          "branch": "main",
+          "status": "installed"
+        },
+        "database": "zenosyne_prod",
+        "maintenance_mode": { "enabled": false, "status": null },
+        "zero_downtime_deployments": true,
+        "deployment_retention": 5,
+        "deployment_script": "cd /home/forge/zenosyne.tech && git pull origin main",
+        "wildcards": false,
+        "app_type": "laravel",
+        "uses_envoyer": false,
+        "deployment_url": "https://forge.laravel.com/servers/1001/sites/5001/deploy/http?token=deploytoken",
+        "healthcheck_url": "https://zenosyne.tech/up",
+        "created_at": "2025-07-29T10:00:00Z",
+        "updated_at": "2025-08-05T10:00:00Z"
+      },
+      "relationships": {
+        "server": { "data": { "id": "1001", "type": "servers" } },
+        "tags": { "data": [] },
+        "latestDeployment": { "data": { "id": "9001", "type": "deployments" } }
+      },
+      "links": { "self": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001/sites/5001" }
+    },
+    {
+      "id": "5002",
+      "type": "sites",
+      "attributes": {
+        "name": "staging.zenosyne.tech",
+        "status": "installing",
+        "url": "http://staging.zenosyne.tech",
+        "user": "staging",
+        "https": false,
+        "web_directory": "/public",
+        "root_directory": null,
+        "aliases": [],
+        "php_version": null,
+        "deployment_status": "failed",
+        "quick_deploy": null,
+        "isolated": true,
+        "shared_paths": {},
+        "repository": {
+          "provider": "github",
+          "url": null,
+          "branch": null,
+          "status": null
+        },
+        "database": null,
+        "maintenance_mode": { "enabled": true, "status": "enabled" },
+        "zero_downtime_deployments": false,
+        "deployment_retention": null,
+        "deployment_script": null,
+        "wildcards": null,
+        "app_type": "Custom",
+        "uses_envoyer": false,
+        "deployment_url": "https://forge.laravel.com/servers/1001/sites/5002/deploy/http?token=deploytoken2",
+        "healthcheck_url": null,
+        "created_at": "2025-08-02T10:00:00Z",
+        "updated_at": null
+      },
+      "relationships": {
+        "server": { "data": { "id": "1001", "type": "servers" } },
+        "tags": { "data": [] },
+        "latestDeployment": { "data": null }
+      },
+      "links": { "self": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001/sites/5002" }
+    }
+  ],
+  "links": { "first": null, "last": null, "prev": null, "next": null },
+  "meta": {
+    "path": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001/sites",
+    "per_page": 50,
+    "next_cursor": null,
+    "prev_cursor": null
+  }
+}
