@@ -6,7 +6,7 @@ summary: The clean-room build of forge-mcp — an MCP server exposing Laravel Fo
 keywords: [mcp, laravel-forge, api, typescript, tools, deployment, organization-scoped, stdio]
 level: planning
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # forge-mcp — implementation plan
@@ -118,9 +118,20 @@ surfaces against the real API early.
 **Result (issue #6):** the lazy organization resolution piece of stage 1 is built and validated —
 `OrganizationResolver` (`src/org.ts`) plus the 30-second request timeout (`REQUEST_TIMEOUT_MS` in
 `src/client.ts`). Behavior is documented in `.docs/handbooks/developer/organization-resolution.md`
-and `.docs/handbooks/admin/configuration.md`. The rest of stage 1 — `package.json`, `tsconfig`,
-build, stdio wiring, and the three read tools — remains open; `src/tools/index.ts` is still an
-empty registry.
+and `.docs/handbooks/admin/configuration.md`.
+
+**Result (issue #7):** stage 1's three read tools are registered and validated live against a
+real Forge account — `list_servers`, `get_server` and `list_sites` (`src/tools/servers.ts`,
+`src/tools/sites.ts`), sharing the whitelist projection, cursor pagination and total-output
+budget built in `src/tools/common.ts`. All three carry `readOnlyHint: true`,
+`destructiveHint: false`, `idempotentHint: true`. `get_server` and `list_servers` share one
+projection (`projectServer`) and return byte-identical rows, confirmed by a test that diffs
+their key sets. `src/types.ts`'s `SiteAttributes` is corrected against the published
+`SiteResource` schema — the scaffolding's `directory`, `repository_branch` and
+`repository_provider` do not exist; the real shape is `root_directory`, `web_directory` and a
+nested `repository { provider, url, branch, status }` — confirmed against live data. Documented
+in `.docs/handbooks/developer/read-tools.md` and `.docs/handbooks/admin/read-tools.md`.
+`src/tools/index.ts` is no longer an empty registry; the remaining read tools are still stage 2.
 
 **Result (issue #16):** the error-rendering path built alongside stage 1 (`describeHttpFailure`
 and `quoteUpstream` in `src/errors.ts`, the token argument threaded through `src/client.ts`, and
