@@ -77,6 +77,71 @@ describe("OrganizationResolver — discovery", () => {
       ForgeError,
     );
   });
+
+  it("raises a ForgeError, not a TypeError, for a null single entry", async () => {
+    const forge = fakeFetch({ body: fixture("orgs-single-null-entry") });
+
+    const failure = await resolverFor(forge.fetchImpl)
+      .slug()
+      .catch((error: unknown) => error);
+
+    // A raw TypeError escapes as "Unexpected failure in <tool>." — useless to the
+    // operator who has to fix the payload or set FORGE_ORG.
+    expect(failure).toBeInstanceOf(ForgeError);
+    expect(failure).not.toBeInstanceOf(TypeError);
+    expect((failure as ForgeError).message).toContain("FORGE_ORG");
+  });
+
+  it("raises a ForgeError for a single entry carrying no attributes", async () => {
+    const forge = fakeFetch({
+      body: { data: [{ id: "org-1", type: "organization" }] },
+    });
+
+    const failure = await resolverFor(forge.fetchImpl)
+      .slug()
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ForgeError);
+    expect((failure as ForgeError).message).toContain("FORGE_ORG");
+  });
+
+  it("says plainly when several organizations cannot be identified at all", async () => {
+    const forge = fakeFetch({
+      body: fixture("orgs-multiple-unidentifiable"),
+    });
+
+    const failure = await resolverFor(forge.fetchImpl)
+      .slug()
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ForgeError);
+    const message = (failure as ForgeError).message;
+    // "(unknown, unknown)" is not something an operator can put in FORGE_ORG.
+    expect(message).not.toContain("unknown");
+    expect(message).toContain("none of which could be identified");
+    expect(message).toContain("FORGE_ORG");
+  });
+
+  it("falls back to ids, and says how many were identified, when slugs are missing", async () => {
+    const forge = fakeFetch({
+      body: {
+        data: [
+          { id: "org-1", type: "organization" },
+          { type: "organization", attributes: { name: "Example Agency" } },
+        ],
+      },
+    });
+
+    const failure = await resolverFor(forge.fetchImpl)
+      .slug()
+      .catch((error: unknown) => error);
+
+    const message = (failure as ForgeError).message;
+    expect(message).toContain("org-1");
+    expect(message).not.toContain("unknown");
+    expect(message).toContain("2 organizations");
+    expect(message).toContain("1 of which could be identified");
+  });
 });
 
 describe("OrganizationResolver — FORGE_ORG override", () => {
@@ -175,6 +240,56 @@ describe("OrganizationResolver — one discovery per process", () => {
     await expect(resolver.slug()).rejects.toThrow(ForgeError);
 
     expect(forge.calls).toHaveLength(1);
+  });
+
+  it("does not re-ask after a malformed payload — that verdict is settled too", async () => {
+    const forge = fakeFetch({ body: fixture("orgs-single-null-entry") });
+    const resolver = resolverFor(forge.fetchImpl);
+
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+
+    expect(forge.calls).toHaveLength(1);
+  });
+
+  it("does not re-ask after a degenerate multi-organization payload", async () => {
+    const forge = fakeFetch({ body: fixture("orgs-multiple-unidentifiable") });
+    const resolver = resolverFor(forge.fetchImpl);
+
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+
+    expect(forge.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["a rejected token (401)", 401],
+    ["a token without the scope (403)", 403],
+  ])("does not re-ask after %s", async (_why, status) => {
+    const forge = fakeFetch({ status, body: { message: "Unauthenticated." } });
+    const resolver = resolverFor(forge.fetchImpl);
+
+    // Neither can resolve inside this process, so re-asking on every tool call
+    // would only add a doomed round trip to each one.
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+
+    expect(forge.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["a rate limit (429)", 429],
+    ["an upstream fault (500)", 500],
+  ])("allows a retry after %s, which settles nothing", async (_why, status) => {
+    const forge = fakeFetch((_call, index) =>
+      index === 0 ? { status, body: {} } : { body: fixture("orgs-single") },
+    );
+    const resolver = resolverFor(forge.fetchImpl);
+
+    await expect(resolver.slug()).rejects.toThrow(ForgeError);
+    await expect(resolver.slug()).resolves.toBe("zenosyne-ltd");
+    expect(forge.calls).toHaveLength(2);
   });
 
   it("allows a retry after a transport failure, which settles nothing", async () => {

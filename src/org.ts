@@ -19,10 +19,13 @@ const SLUG_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
  *
  * Discovery happens at most once: the in-flight promise is shared, so concurrent
  * first calls issue a single `GET /orgs`, and its answer is reused for the life of
- * the process. The one deliberate exception is a transport or HTTP failure — that
- * says nothing about which organizations exist, so it is not cached and the next
- * tool call may try again. A verdict *about the organizations* (none, or several
- * with no FORGE_ORG) cannot change within a process and stays cached.
+ * the process. The deliberate exception is a failure that says nothing final — a
+ * transport failure, a 429, a 5xx — which is not cached, so the next tool call may
+ * try again. Everything else is a SETTLED verdict and is never re-asked: a verdict
+ * *about the organizations* (none, one, several with no FORGE_ORG, or a payload this
+ * server cannot understand) cannot change within a process, and neither can a
+ * credential verdict — a rejected (401) or unscoped (403) token stays that way for
+ * the life of the process.
  */
 export class OrganizationResolver {
   readonly #client: ForgeClient;
@@ -78,28 +81,55 @@ export class OrganizationResolver {
       if (orgs.length > 1) {
         settled = true;
         // Defensive: an entry without attributes must not turn a helpful message
-        // into a TypeError the agent cannot act on.
-        const slugs = orgs
-          .map((o) => o?.attributes?.slug ?? o?.id ?? "unknown")
-          .join(", ");
+        // into a TypeError the agent cannot act on. Entries that name nothing
+        // usable are omitted rather than printed as a placeholder — an operator
+        // cannot put "unknown" in FORGE_ORG, so saying so plainly is the only
+        // actionable answer.
+        const identified = orgs
+          .map((o) => o?.attributes?.slug ?? o?.id)
+          .filter(
+            (name): name is string =>
+              typeof name === "string" && name.trim() !== "",
+          );
+        const detail =
+          identified.length === orgs.length
+            ? ` (${identified.join(", ")})`
+            : identified.length === 0
+              ? ", none of which could be identified from Forge's response — no entry carried a slug or an id"
+              : `, only ${identified.length} of which could be identified from Forge's response (${identified.join(", ")})`;
         throw new ForgeError(
-          `This token can see ${orgs.length} organizations (${slugs}). Set FORGE_ORG to the slug you want this server to act on.`,
+          `This token can see ${orgs.length} organizations${detail}. Set FORGE_ORG to the slug you want this server to act on.`,
         );
       }
 
-      const slug = orgs[0]!.attributes?.slug;
+      // The single entry gets exactly the defence the multi-org branch gets: a
+      // `{"data":[null]}` payload is a verdict about the payload, not a crash, and
+      // asking Forge again would produce the same answer every time.
+      const slug = orgs[0]?.attributes?.slug;
       if (typeof slug !== "string" || !isUsableInPath(slug)) {
         settled = true;
         throw new ForgeError(
-          "Forge returned an organization whose slug cannot be placed in an API path. Set FORGE_ORG to the slug this server should act on.",
+          "Forge's response to GET /orgs did not describe the single visible organization in a way this server understands — its entry carried no slug that can be placed in an API path. Set FORGE_ORG to the slug this server should act on.",
         );
       }
       return slug;
     } catch (error) {
-      if (!settled) this.#discovery = undefined;
+      if (!settled && !isSettledFailure(error)) this.#discovery = undefined;
       throw error;
     }
   }
+}
+
+/**
+ * A credential verdict cannot change inside this process: a token Forge rejects
+ * (401) or that lacks the scope (403) is rejected identically on every later call,
+ * so re-asking on every tool call only buys latency. A transport failure, a 429 or a
+ * 5xx says nothing final and stays retryable.
+ */
+function isSettledFailure(error: unknown): boolean {
+  return (
+    error instanceof ForgeError && (error.status === 401 || error.status === 403)
+  );
 }
 
 /** Anything that could change the shape of the path it is spliced into is rejected. */
