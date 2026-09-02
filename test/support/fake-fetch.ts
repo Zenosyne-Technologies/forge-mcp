@@ -27,12 +27,18 @@ export interface FakeFetch {
 }
 
 /**
- * A canned reply: a JSON body (with optional status), an error to throw, or
- * `{ hang: true }` — a request that is accepted and then never answered, which only
+ * A canned reply: a JSON body (with optional status), a raw `text` body served as
+ * `text/html` — what a proxy or WAF returns when it answers instead of Forge, and the
+ * only way to exercise the non-JSON path in `readJson` — an error to throw, or
+ * `{ hang: true }`: a request that is accepted and then never answered, which only
  * the caller's own `AbortSignal` can end. That is what a real hung upstream does,
  * and it is the only way to prove the client's timeout is what frees the caller.
  */
-export type Reply = { body?: unknown; status?: number } | { hang: true } | Error;
+export type Reply =
+  | { body?: unknown; status?: number }
+  | { text: string; status?: number }
+  | { hang: true }
+  | Error;
 
 /**
  * Builds a fetch that records calls and answers with `reply` — or, when `reply` is a
@@ -65,6 +71,13 @@ export function fakeFetch(
         signal.addEventListener("abort", () => reject(signal.reason as Error), {
           once: true,
         });
+      });
+    }
+
+    if ("text" in answer) {
+      return new Response(answer.text, {
+        status: answer.status ?? 200,
+        headers: { "Content-Type": "text/html" },
       });
     }
 

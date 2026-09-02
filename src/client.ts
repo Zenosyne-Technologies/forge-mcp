@@ -71,7 +71,10 @@ export class ForgeClient {
 
     if (!response.ok) {
       throw new ForgeError(
-        describeHttpFailure(response.status, path, payload),
+        // The token is handed over for the length of this call so that an upstream
+        // body reflecting our own Authorization header is scrubbed before it is
+        // quoted. It is passed, never stored there: this field stays the only copy.
+        describeHttpFailure(response.status, path, payload, this.#token),
         response.status,
       );
     }
