@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ForgeClient } from "./client.js";
 import { OrganizationResolver } from "./org.js";
-import { ForgeError } from "./errors.js";
+import { renderToolFailure } from "./errors.js";
 import { tools, type ToolContext } from "./tools/index.js";
 
 const SERVER_NAME = "forge-mcp";
@@ -40,13 +40,16 @@ async function main(): Promise<void> {
             ],
           };
         } catch (error) {
-          // Surface the actionable message; never the credential, never a stack.
-          const message =
-            error instanceof ForgeError
-              ? error.message
-              : `Unexpected failure in ${tool.name}.`;
+          // Surface the actionable message; never the credential, never a stack,
+          // and — like the success path above — never raw text that could carry
+          // structure of its own. Rendering lives in errors.ts; this is wiring.
           return {
-            content: [{ type: "text" as const, text: message }],
+            content: [
+              {
+                type: "text" as const,
+                text: renderToolFailure(error, tool.name),
+              },
+            ],
             isError: true,
           };
         }
