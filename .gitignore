@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.env.*
+.claude/telemetry-context.json
+.marvin/
+CLAUDE.md
