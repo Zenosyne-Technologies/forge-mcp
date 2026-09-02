@@ -155,9 +155,28 @@ function encodeErrors(errors: unknown): string | undefined {
  * credential or a character a human reader cannot see.
  */
 function quoteUpstream(raw: string, secret?: string): string | undefined {
-  // Redaction runs first, on the raw text: once every occurrence is gone, no later
-  // step — flattening or truncation — can leave a surviving piece of the token.
-  const redacted = secret ? raw.split(secret).join(REDACTED_SECRET) : raw;
+  // Redaction runs TWICE — once on the raw text, once on the flattened text — and
+  // both passes are load-bearing, because each catches an occurrence the other
+  // cannot see. Matching is exact-substring, so a pass only fires where the token
+  // is contiguous, and neutralisation moves characters in BOTH directions.
+  //
+  // The raw pass catches a token that is contiguous as Forge sent it. It has to run
+  // before neutralisation, because neutralisation can BREAK an occurrence: every
+  // denied character that had width becomes a SPACE, so a token carrying one would
+  // arrive at the second pass already split into two pieces that match nothing.
+  //
+  // The flattened pass catches a token that only BECOMES contiguous here.
+  // Neutralisation DELETES the zero-width characters, so `<half>` + U+200B +
+  // `<half>` — a soft hyphen in an HTML error page is the accidental version, an
+  // invisible character planted inside a reflected header the deliberate one —
+  // passes the raw pass unmatched and is then reassembled into a working
+  // credential. Redacting only before that deletion is redacting a string that is
+  // not the one emitted.
+  //
+  // After the second pass the emitted text is settled: truncation only removes
+  // trailing characters, and every substring of what remains was already a
+  // substring of a string proven free of the token.
+  const redacted = redact(raw, secret);
 
   // The shared rule decides what survives; this path adds one thing on top of it.
   // A quoted fragment must not be able to close its own quote — a hazard that
@@ -166,7 +185,10 @@ function quoteUpstream(raw: string, secret?: string): string | undefined {
   // `JSON.stringify` escapes. Swapping rather than escaping keeps the delimiter
   // readable, and it is applied after neutralisation so the swap cannot be the step
   // that introduces something unreadable.
-  const flattened = neutraliseUpstreamText(redacted).replace(/"/g, "'");
+  const flattened = redact(
+    neutraliseUpstreamText(redacted).replace(/"/g, "'"),
+    secret,
+  );
   if (!flattened) return undefined;
 
   const bounded =
@@ -174,4 +196,16 @@ function quoteUpstream(raw: string, secret?: string): string | undefined {
       ? `${boundToLength(flattened, MAX_UPSTREAM_DETAIL - 1)}…`
       : flattened;
   return `${UPSTREAM_LABEL} "${bounded}"`;
+}
+
+/**
+ * Replace every occurrence of the caller's token, or return the text untouched.
+ *
+ * One function because it is applied at two points and the two must not drift into
+ * two different notions of what an occurrence is. An absent or empty `secret` is a
+ * no-op rather than a match: splitting on the empty string would separate every
+ * character and rebuild the text out of redaction markers.
+ */
+function redact(value: string, secret?: string): string {
+  return secret ? value.split(secret).join(REDACTED_SECRET) : value;
 }

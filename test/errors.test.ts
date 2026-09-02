@@ -526,6 +526,158 @@ describe("the credential never appears in a message", () => {
   });
 });
 
+/**
+ * The invisible characters that split a reflected token in the RAW body and are
+ * then DELETED by the shared rule — fusing the two halves back into a working
+ * credential in the text that is actually emitted.
+ *
+ * Every one of them is `Default_Ignorable_Code_Point`, which is exactly the class
+ * `src/upstream-text.ts` removes rather than spaces, and that is why they are the
+ * dangerous ones: a character that became a space would leave `test- token`, which
+ * is not a credential, while a character that is deleted leaves `test-token`, which
+ * is. The realistic trigger is accidental rather than adversarial — an HTML error
+ * page that soft-hyphenates a long unbreakable header value decodes `&shy;` to
+ * U+00AD, and `readJson` hands a non-JSON body straight to `quoteUpstream`.
+ */
+const INVISIBLE_SPLITTERS: ReadonlyArray<readonly [string, string]> = [
+  ["U+200B ZERO WIDTH SPACE", "​"],
+  ["U+00AD SOFT HYPHEN", "­"],
+  ["U+2060 WORD JOINER", "⁠"],
+  ["U+034F COMBINING GRAPHEME JOINER", "͏"],
+  ["U+FE00 VARIATION SELECTOR-1", "︀"],
+  ["U+E0001 LANGUAGE TAG", "\u{E0001}"],
+  ["U+180E MONGOLIAN VOWEL SEPARATOR", "᠎"],
+];
+
+/** `test-token` with `char` planted inside it, exactly as a reflected header would carry it. */
+const split = (char: string): string =>
+  `${TOKEN.slice(0, 5)}${char}${TOKEN.slice(5)}`;
+
+/**
+ * An obviously fake credential that carries a character the shared rule replaces
+ * with a SPACE rather than deleting — a `\p{Zs}` no-break space.
+ *
+ * It exists to hold the FIRST redaction pass honest. Neutralisation would break
+ * this token into `test- token`, so a redactor that only ran afterwards would never
+ * see it whole and would emit the credential nearly intact.
+ */
+const SPACED_TOKEN = "test- token";
+
+describe("redaction survives neutralisation — both passes", () => {
+  it("does not re-fuse a token an invisible character split, JSON body", async () => {
+    for (const [name, char] of INVISIBLE_SPLITTERS) {
+      // The premise, asserted rather than assumed: this character is deleted, so
+      // the halves around it end up touching.
+      expect(neutraliseUpstreamText(`a${char}b`), name).toBe("ab");
+
+      const forge = fakeFetch({
+        status: 502,
+        body: {
+          message: `Bad gateway. Upstream request headers: Authorization: Bearer ${split(char)}`,
+        },
+      });
+      const client = new ForgeClient({
+        token: TOKEN,
+        fetchImpl: forge.fetchImpl,
+      });
+
+      const failure = await client
+        .request("GET", PATH)
+        .catch((error: unknown) => error);
+
+      const message = (failure as ForgeError).message;
+      expect(message, name).not.toContain(TOKEN);
+      expect(message, name).toContain(`Bearer ${REDACTED_SECRET}`);
+      expect(renderToolFailure(failure, "get_server"), name).not.toContain(
+        TOKEN,
+      );
+    }
+  });
+
+  it("does not re-fuse a token an invisible character split, non-JSON HTML body", async () => {
+    for (const [name, char] of INVISIBLE_SPLITTERS) {
+      // What a proxy actually serves: `&shy;` inside a long header value, decoded.
+      const html = `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: Bearer ${split(char)}</pre></body></html>`;
+      const forge = fakeFetch({ status: 502, text: html });
+      const client = new ForgeClient({
+        token: TOKEN,
+        fetchImpl: forge.fetchImpl,
+      });
+
+      const failure = await client
+        .request("GET", PATH)
+        .catch((error: unknown) => error);
+
+      const message = (failure as ForgeError).message;
+      expect(message, name).toContain("502 Bad Gateway");
+      expect(message, name).not.toContain(TOKEN);
+      expect(message, name).toContain(`Bearer ${REDACTED_SECRET}`);
+      expect(renderToolFailure(failure, "get_server"), name).not.toContain(
+        TOKEN,
+      );
+    }
+  });
+
+  it("redacts a token carrying a character that becomes a space", () => {
+    // The premise: this one is spaced, not deleted, so the emitted form of the
+    // credential is `test- token` and only a pass on the RAW text ever sees it whole.
+    expect(neutraliseUpstreamText(SPACED_TOKEN)).toBe("test- token");
+
+    const message = describeHttpFailure(
+      502,
+      PATH,
+      { message: `Bad gateway. Authorization: Bearer ${SPACED_TOKEN}` },
+      SPACED_TOKEN,
+    );
+
+    expect(message).not.toContain(SPACED_TOKEN);
+    expect(message).not.toContain("test- token");
+    expect(message).toContain(`Bearer ${REDACTED_SECRET}`);
+  });
+
+  it("fails if either redaction pass is removed", () => {
+    // One test, two directions, so neither pass can be deleted quietly.
+    //
+    // Delete the pass that runs BEFORE neutralisation and the spaced token stops
+    // being matched at all: `test- token` becomes `test- token`, which the
+    // later pass — still looking for the raw secret — walks straight past.
+    const spaced = describeHttpFailure(
+      404,
+      PATH,
+      `Bearer ${SPACED_TOKEN}`,
+      SPACED_TOKEN,
+    );
+    expect(spaced).toContain(REDACTED_SECRET);
+    expect(spaced).not.toContain("test- token");
+
+    // Delete the pass that runs AFTER it and the zero-width split survives the raw
+    // pass unmatched, then the deletion reassembles the credential in the emitted
+    // message.
+    const fused = describeHttpFailure(
+      404,
+      PATH,
+      `Bearer ${split("​")}`,
+      TOKEN,
+    );
+    expect(fused).toContain(REDACTED_SECRET);
+    expect(fused).not.toContain(TOKEN);
+  });
+
+  it("still redacts when the split token sits past the 200-character bound", () => {
+    // Redaction of the flattened text runs before truncation, so the bound is not
+    // what is doing the work here — but nothing may leak on the way to it either.
+    const message = describeHttpFailure(
+      404,
+      PATH,
+      { message: `${"prose ".repeat(32)}Bearer ${split("​")}` },
+      TOKEN,
+    );
+
+    expect(message).not.toContain(TOKEN);
+    expect(quotedFragment(message)).toHaveLength(MAX_UPSTREAM_DETAIL);
+  });
+});
+
 describe("organization verdicts are untouched", () => {
   it("stays server-authored, unlabelled and single-line", async () => {
     const forge = fakeFetch({ body: fixture("orgs-multiple") });

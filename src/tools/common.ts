@@ -69,8 +69,9 @@ const MAX_LIST_ITEMS = 25;
  *
  * A page always carries at least one row, whatever that row costs — a budget that
  * can return nothing is a denial of service an upstream payload gets to trigger —
- * and 60,000 sits well above the ~10,000 characters a single worst-case row emits,
- * so that clause is a guarantee rather than a routine over-spend. Detail tools
+ * and 60,000 sits well above the 17,216 characters a single worst-case row emits —
+ * measured, escaping and pretty-printing included, not estimated — so that clause is
+ * a guarantee rather than a routine over-spend. Detail tools
  * return one such row and are already bounded by the field caps, so the budget
  * belongs on the list path.
  */
@@ -372,10 +373,16 @@ function is_are(count: number): string {
  * where that assumption slips, every answer it can return has been measured to fit,
  * which is the property that matters.
  *
- * The first row is taken whatever it costs: a worst-case row emits ~10,000
+ * The first row is taken whatever it costs: a worst-case row emits 17,216
  * characters against a 60,000 budget, so this is a guarantee against an empty page
  * rather than a routine over-spend, and an empty page would hand an upstream payload
- * a way to answer every question with nothing.
+ * a way to answer every question with nothing. That figure is measured through
+ * `emittedForm`, so it counts the pretty-printed indentation and key names as well
+ * as the values — and it counts JSON's escaping of them: `"` and `\` are
+ * punctuation, so the allowlist admits them and every one costs two characters on
+ * the wire rather than one. A row of quotes is therefore worth 17,216 where the same
+ * row of letters is worth 8,992, and the estimate this replaces was low by that
+ * factor because it costed the characters rather than the document.
  */
 function fitBudget<T>(rows: T[], build: (kept: T[]) => unknown): T[] {
   const fits = (kept: T[]): boolean =>
