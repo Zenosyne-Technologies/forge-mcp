@@ -19,3 +19,4 @@ updated: 2026-09-02
 
 | item | sources | what it covers | status | updated |
 |---|---|---|---|---|
+| [configuration](configuration.md) | `src/org.ts`, `src/client.ts` | The environment variables forge-mcp reads, what happens with one Forge organization versus several, and what to do about each organization-resolution error message. | active | 2026-09-02 |
