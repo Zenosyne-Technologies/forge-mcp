@@ -26,8 +26,13 @@ export interface FakeFetch {
   calls: RecordedCall[];
 }
 
-/** A canned reply: a JSON body (with optional status), or an error to throw. */
-export type Reply = { body?: unknown; status?: number } | Error;
+/**
+ * A canned reply: a JSON body (with optional status), an error to throw, or
+ * `{ hang: true }` — a request that is accepted and then never answered, which only
+ * the caller's own `AbortSignal` can end. That is what a real hung upstream does,
+ * and it is the only way to prove the client's timeout is what frees the caller.
+ */
+export type Reply = { body?: unknown; status?: number } | { hang: true } | Error;
 
 /**
  * Builds a fetch that records calls and answers with `reply` — or, when `reply` is a
@@ -49,6 +54,19 @@ export function fakeFetch(
     const answer =
       typeof reply === "function" ? reply(call, calls.length - 1) : reply;
     if (answer instanceof Error) throw answer;
+
+    if ("hang" in answer) {
+      // Exactly like a stalled real request: nothing here ever resolves it, so the
+      // abort signal the client attached is the only thing that can.
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) return;
+        if (signal.aborted) return reject(signal.reason as Error);
+        signal.addEventListener("abort", () => reject(signal.reason as Error), {
+          once: true,
+        });
+      });
+    }
 
     return new Response(JSON.stringify(answer.body ?? null), {
       status: answer.status ?? 200,
