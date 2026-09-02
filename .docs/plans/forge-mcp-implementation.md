@@ -122,6 +122,13 @@ and `.docs/handbooks/admin/configuration.md`. The rest of stage 1 — `package.j
 build, stdio wiring, and the three read tools — remains open; `src/tools/index.ts` is still an
 empty registry.
 
+**Result (issue #16):** the error-rendering path built alongside stage 1 (`describeHttpFailure`
+and `quoteUpstream` in `src/errors.ts`, the token argument threaded through `src/client.ts`, and
+the JSON-quoted error path in `src/index.ts`) is hardened — every fragment quoted from Forge is
+now redacted of the API token, stripped of control and format characters, bounded to 200
+characters and labelled as reported data before it reaches the agent. Documented in
+`.docs/handbooks/developer/error-rendering.md` and `.docs/handbooks/admin/error-messages.md`.
+
 ## Testing
 
 Vitest, with `fetch` mocked against fixtures captured read-only from the live API. One opt-in

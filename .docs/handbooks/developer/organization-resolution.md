@@ -12,6 +12,7 @@ sources:
   - src/client.ts
 related:
   - "[[configuration]]"
+  - "[[error-rendering]]"
 created: 2026-09-02
 updated: 2026-09-02
 ---
@@ -59,5 +60,6 @@ The one exception to "the cache holds no upstream strings" is the `ambiguous` ve
 
 - `src/index.ts` constructs one `OrganizationResolver` per process and hands it to every tool handler through `ToolContext`.
 - `src/tools/index.ts` declares `org: OrganizationResolver` on `ToolContext`; a tool handler calls `ctx.org.slug()` to get the path segment it needs.
+- An unsettled discovery failure (a transport error, a timeout, a `429`, a `5xx`) is not a verdict this resolver builds itself — it propagates the `ForgeError` `ForgeClient.request()` raised, rendered per [[error-rendering]].
 
 See [[configuration]] for what an operator does with `FORGE_ORG` and what each error message means.

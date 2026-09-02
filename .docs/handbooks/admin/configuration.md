@@ -12,6 +12,7 @@ sources:
   - src/client.ts
 related:
   - "[[organization-resolution]]"
+  - "[[error-messages]]"
 created: 2026-09-02
 updated: 2026-09-02
 ---
@@ -51,4 +52,4 @@ Every Forge API request is capped at 30 seconds. If Forge itself hangs, forge-mc
 
 ## See also
 
-[[organization-resolution]] for how this works internally.
+[[organization-resolution]] for how this works internally. [[error-messages]] for what it means when a failed tool call quotes text Forge itself reported.
