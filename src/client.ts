@@ -10,8 +10,18 @@ export const FORGE_API_BASE = "https://forge.laravel.com/api";
  * one in-flight discovery promise, so a single hung request would wedge every later
  * tool call behind a promise that can never settle, and only a process restart would
  * recover it. Thirty seconds is far longer than Forge's slowest normal reply and far
- * shorter than an agent session, so a timeout means "this call did not land" — a
- * transport failure, retryable like any other.
+ * shorter than an agent session.
+ *
+ * What a timeout does NOT mean is "this call did not land". It means only that no
+ * answer arrived in time, and the request may have been received and executed in
+ * full — a deployment triggered, a server rebooted, a deployment script rewritten —
+ * with the reply lost on the way back. For a GET that distinction costs nothing: the
+ * call can be repeated and the worst case is a wasted round trip. For a POST or a
+ * PUT it is the whole question, because repeating it can perform the action a second
+ * time. So a timed-out write is an UNKNOWN outcome, not a failed one: neither this
+ * client nor the agent above it may retry one on the assumption that nothing
+ * happened. Establish what the state actually is — read the resource back — and let
+ * the caller decide deliberately whether to send it again.
  */
 export const REQUEST_TIMEOUT_MS = 30_000;
 
