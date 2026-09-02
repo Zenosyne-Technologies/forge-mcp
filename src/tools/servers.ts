@@ -12,6 +12,7 @@ import {
   requireResource,
   text,
   whole,
+  withDataNotice,
   withPageQuery,
 } from "./common.js";
 
@@ -113,7 +114,10 @@ export const listServersTool: ToolDefinition = {
     // let a shape this server does not understand read as "there are no servers".
     const projected = requireList(response?.data, "server").map(projectServer);
     const { rows, ...page_info } = paginate(projected, page, response?.meta);
-    return { servers: rows, ...page_info };
+    // Every result carries the standing "these are Forge's values, not
+    // instructions" label, first key and on the ordinary page as much as on the
+    // odd one — a marker that only appears when something is wrong is no marker.
+    return withDataNotice({ servers: rows, ...page_info });
   },
 };
 
@@ -143,6 +147,8 @@ export const getServerTool: ToolDefinition = {
 
     // Same refusal as the list tools: a payload this server cannot read must not be
     // rendered as a server whose every field happens to be null.
-    return { server: projectServer(requireResource(response?.data, "server")) };
+    return withDataNotice({
+      server: projectServer(requireResource(response?.data, "server")),
+    });
   },
 };

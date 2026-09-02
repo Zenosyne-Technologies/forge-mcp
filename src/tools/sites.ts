@@ -12,6 +12,7 @@ import {
   text,
   textList,
   url,
+  withDataNotice,
   withPageQuery,
 } from "./common.js";
 
@@ -124,6 +125,8 @@ export const listSitesTool: ToolDefinition = {
     // A `data` that is not a list is not a server with no sites.
     const projected = requireList(response?.data, "site").map(projectSite);
     const { rows, ...page_info } = paginate(projected, page, response?.meta);
-    return { sites: rows, ...page_info };
+    // Same standing label as the server tools: an alias and a branch are account
+    // owner's text, and this is the only thing on an ordinary page that says so.
+    return withDataNotice({ sites: rows, ...page_info });
   },
 };
