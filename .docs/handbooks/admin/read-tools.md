@@ -2,8 +2,8 @@
 doc: Using the read-only tools
 type: handbook
 status: active
-summary: What list_servers, get_server and list_sites return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, and which fields never appear on purpose.
-keywords: [list_servers, get_server, list_sites, pagination, cursor, page_size, has_more, next_cursor, annotations, readOnlyHint]
+summary: What list_servers, get_server and list_sites return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, which fields never appear on purpose, and why a name or domain can render slightly differently than it does in the Forge dashboard.
+keywords: [list_servers, get_server, list_sites, pagination, cursor, page_size, has_more, next_cursor, annotations, readOnlyHint, emoji, invisible characters]
 level: project
 audience: admin
 module: read tools
@@ -11,6 +11,7 @@ sources:
   - src/tools/servers.ts
   - src/tools/sites.ts
   - src/tools/common.ts
+  - src/upstream-text.ts
 related:
   - "[[configuration]]"
   - "[[error-messages]]"
@@ -53,6 +54,17 @@ The one combination worth knowing by name: **`has_more: true` with `next_cursor:
 By design, no read tool ever returns: server credential material, the deploy-trigger URL for a site (a secret — anyone holding it can trigger a deployment), the raw deployment script, or shared-path link targets. This is not an oversight to work around; it is the same withholding principle [[error-messages]] describes for the `[redacted]` token substitution — data that would let an agent (or anyone reading its output) act destructively is kept out of read results entirely, not merely warned about.
 
 Every successful result also opens with a standing `data_notice` field. That is not an error indicator — it appears on every normal result and exists to tell whatever is reading the output that the record values that follow (a server name, a site domain, a git branch) were written by whoever administers your Forge account, not by this server, and should not be treated as instructions.
+
+## Why a name or domain can look slightly different than in the Forge dashboard
+
+Every piece of text these tools copy from your account — a server name, a site domain, an alias, a git branch — passes through the same visible-text rule [[error-messages]] describes for a quoted Forge error, before it reaches the agent. In practice that can mean:
+
+- A character that renders as nothing (an invisible formatting character some tool or paste added) is silently removed, rather than shown as a gap.
+- Anything else out of the ordinary — an exotic space, an unassigned character — comes through as a single plain space.
+- An emoji built from several joined characters (a family, a flag) can arrive as its separate parts, and a colour emoji can arrive as its plain black-and-white outline.
+- Accented letters, and the combining marks used by scripts such as Devanagari, Thai and Arabic, are kept and continue to render correctly — a name in one of these scripts is not affected.
+
+Nothing in Forge itself changes, and nothing is renamed — this only affects what forge-mcp is willing to repeat into an AI agent's context, for the reason [[error-messages]] gives for redaction: text written by someone else must not be able to carry hidden instructions or unreadable characters into what the agent reads. If a name looks off, the Forge dashboard always shows the real, unmodified value.
 
 ## See also
 

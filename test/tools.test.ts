@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { ForgeClient } from "../src/client.js";
@@ -8,7 +10,11 @@ import {
   type ToolContext,
   type ToolDefinition,
 } from "../src/tools/index.js";
-import { MAX_RESULT_CHARS, RECORD_DATA_LABEL } from "../src/tools/common.js";
+import {
+  MAX_RESULT_CHARS,
+  RECORD_DATA_LABEL,
+  emittedForm,
+} from "../src/tools/common.js";
 import type { ServerView } from "../src/tools/servers.js";
 import type { SiteView } from "../src/tools/sites.js";
 import { fakeFetch, fixture, type FakeFetch } from "./support/fake-fetch.js";
@@ -769,14 +775,10 @@ describe("the total output budget", () => {
     expect(result.sites.length).toBeGreaterThan(0);
     expect(result.sites.length).toBeLessThan(100);
     expect(result.count).toBe(result.sites.length);
-    expect(JSON.stringify(result.sites).length).toBeLessThanOrEqual(
-      MAX_RESULT_CHARS,
-    );
-    // Unbounded, this page was megabytes; the whole envelope now fits the budget
-    // plus the words that explain it.
-    expect(JSON.stringify(result).length).toBeLessThan(
-      MAX_RESULT_CHARS + 2_000,
-    );
+    // Unbounded, this page was megabytes. The bound is asserted on the artifact
+    // the agent receives — the pretty-printed document, envelope and all — because
+    // that is the only number that describes what the context actually pays.
+    expect(emittedForm(result).length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
   });
 
   it("says it truncated, in words, and how the withheld rows can be reached", async () => {
@@ -863,6 +865,144 @@ describe("the total output budget", () => {
 
     expect(result.count).toBe(2);
     expect(result.notes.join(" ")).not.toContain("budget");
+  });
+
+  /** A page whose values are short and whose fields are many. */
+  function shapedSites(
+    count: number,
+    valueLength: number,
+    aliasCount: number,
+  ): { data: unknown[]; meta: unknown } {
+    const value = "v".repeat(valueLength);
+    return {
+      data: Array.from({ length: count }, (_v, i) => ({
+        id: String(5000 + i),
+        type: "sites",
+        attributes: {
+          name: value,
+          status: value,
+          url: value,
+          app_type: value,
+          deployment_status: value,
+          web_directory: value,
+          root_directory: value,
+          aliases: Array.from({ length: aliasCount }, () => value),
+          repository: {
+            provider: value,
+            url: value,
+            branch: value,
+            status: value,
+          },
+          database: value,
+          php_version: value,
+          user: value,
+          maintenance_mode: { enabled: false, status: value },
+          healthcheck_url: value,
+          created_at: value,
+          updated_at: value,
+        },
+      })),
+      meta: { next_cursor: null },
+    };
+  }
+
+  async function sitesPage(body: unknown): Promise<SiteList> {
+    return (await run(
+      "list_sites",
+      { server_id: "1001", page_size: 100 },
+      fakeFetch({ body }),
+    )) as SiteList;
+  }
+
+  /**
+   * The defect this replaces: rows were costed as compact `JSON.stringify(row)`
+   * while the server emits `JSON.stringify(result, null, 2)`. Indentation is not a
+   * rounding error — on a page of many short fields it doubles the document, and a
+   * declared 60,000 admitted 109,199 characters of context.
+   */
+  it("costs a page by what it emits, not by how tightly it packs", async () => {
+    const result = await sitesPage(shapedSites(100, 2, 25));
+
+    // Every row on this page is the same shape, so one row's cost times 100 is
+    // exactly what each accounting says the full page costs.
+    const row = result.sites[0];
+    const compactPage = JSON.stringify(row).length * 100;
+    const emittedPage = emittedForm(row).length * 100;
+
+    // The old model: 100 rows, comfortably inside a 60,000 budget — it would have
+    // returned every one of them.
+    expect(compactPage).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    // The document that would then have been sent: half again past the bound it
+    // was declared to satisfy, before the envelope's own indentation is added on
+    // top — the measured worst case for this tool was 109,199 characters.
+    expect(emittedPage).toBeGreaterThan(MAX_RESULT_CHARS * 1.4);
+
+    // What is sent now is at the bound, and rows were held back to keep it there.
+    expect(emittedForm(result).length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    expect(result.sites.length).toBeLessThan(100);
+    expect(result.notes.join(" ")).toContain("total output budget");
+  });
+
+  it("counts the envelope, the label, the notes and the cursor, not only the rows", async () => {
+    const cursor = "c".repeat(512);
+    const body = shapedSites(100, 60, 20);
+    body.meta = { next_cursor: cursor };
+
+    const result = await sitesPage(body);
+    const wire = emittedForm(result);
+
+    // All four are really in the document being measured.
+    expect(wire).toContain(RECORD_DATA_LABEL);
+    expect(wire).toContain(cursor);
+    expect(wire).toContain("total output budget");
+    expect(wire).toContain('"has_more": true');
+    // And the document is inside the bound with all of them in it — the rows
+    // alone are strictly smaller, which is exactly what used to be measured.
+    expect(wire.length).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+    expect(wire.length).toBeGreaterThan(
+      emittedForm(result.sites).length +
+        RECORD_DATA_LABEL.length +
+        cursor.length,
+    );
+  });
+
+  it("holds the bound for every page shape, right up to the limit", async () => {
+    const shapes: [number, number][] = [
+      [2, 25],
+      [20, 25],
+      [65, 20],
+      [120, 10],
+      [200, 25],
+      [200, 0],
+    ];
+    let tightest = 0;
+
+    for (const [valueLength, aliasCount] of shapes) {
+      const result = await sitesPage(
+        shapedSites(100, valueLength, aliasCount),
+      );
+      const emitted = emittedForm(result).length;
+
+      expect(emitted, `${valueLength}/${aliasCount}`).toBeLessThanOrEqual(
+        MAX_RESULT_CHARS,
+      );
+      tightest = Math.max(tightest, emitted);
+    }
+
+    // At least one shape presses against the bound, so the assertions above are
+    // not passing on slack — a result at the limit does not exceed it once
+    // emitted, which is the property the old accounting could not offer.
+    expect(tightest).toBeGreaterThan(MAX_RESULT_CHARS - 1_500);
+  });
+
+  it("measures the same rendering src/index.ts sends", () => {
+    // A budget is a bound on the wire only while the thing measured and the thing
+    // sent are the same rendering. index.ts owns the send, so the pairing is
+    // asserted rather than assumed: change one and this fails.
+    expect(readFileSync("src/index.ts", "utf8")).toContain(
+      "JSON.stringify(result, null, 2)",
+    );
+    expect(emittedForm({ a: "b" })).toBe(JSON.stringify({ a: "b" }, null, 2));
   });
 });
 

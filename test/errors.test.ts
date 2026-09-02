@@ -10,6 +10,7 @@ import {
   renderToolFailure,
 } from "../src/errors.js";
 import { OrganizationResolver } from "../src/org.js";
+import { neutraliseUpstreamText } from "../src/upstream-text.js";
 import { fakeFetch, fixture } from "./support/fake-fetch.js";
 
 /** Obviously fake. A real Forge credential never enters this repository. */
@@ -18,15 +19,22 @@ const TOKEN = "test-token";
 const PATH = "/orgs/zenosyne-ltd/servers/1";
 
 /**
- * Anything that would let upstream text stop being a quoted fragment.
+ * Whether a rendered message still holds a character that would let upstream text
+ * stop being a quoted fragment, or hide from the human reading the transcript.
  *
- * `Cc` covers C0, DEL and C1; `Cf` covers every format character — the bidirectional
- * overrides and isolates, the zero-width characters, the interlinear annotations and
- * the U+E0000 tag block — none of which `JSON.stringify` escapes and none of which a
- * human reading the transcript can see. U+2028/U+2029 are `Zl`/`Zp`, so they are
- * named on their own.
+ * Derived from the shared rule in `src/upstream-text.ts` rather than restated: a
+ * character that rule reduces to nothing is a character no reader can see, and
+ * asking the rule means this suite cannot go on asserting a rule the code has
+ * stopped having. It covers the control and format characters the old blacklist
+ * named, and equally the marks, surrogates, blank-rendering letters and unassigned
+ * code points it did not. `test` keeps the shape its call sites already use.
  */
-const STRUCTURE = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+const STRUCTURE = {
+  test: (value: string): boolean =>
+    [...value].some(
+      (char) => char !== " " && neutraliseUpstreamText(char) === "",
+    ),
+};
 
 /** Every code point Unicode assigns to the format category. */
 const CF_CHARS: string[] = [];
@@ -34,6 +42,20 @@ for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
   const char = String.fromCodePoint(codePoint);
   if (/\p{Cf}/u.test(char)) CF_CHARS.push(char);
 }
+
+/**
+ * What the shared rule does with a denied character, spelled out here so these
+ * assertions say WHICH denial they expect rather than assuming one.
+ *
+ * A zero-width character is deleted: it drew nothing, so `before` and `after` were
+ * already touching on screen and a substituted space would be a gap no reader saw.
+ * Everything else denied occupied width, so it becomes a space and the two words
+ * stay two words.
+ */
+const denied = (char: string, left: string, right: string): string =>
+  /\p{Default_Ignorable_Code_Point}/u.test(char)
+    ? `${left}${right}`
+    : `${left} ${right}`;
 
 /** The fragment Forge supplied, lifted back out of a rendered message. */
 function quotedFragment(message: string): string {
@@ -159,7 +181,8 @@ describe("describeHttpFailure — neutralising structure", () => {
 
   it("neutralises every character in the Unicode Cf category", () => {
     // Not a sample: every assigned format code point, one at a time, each proven to
-    // leave the rendered message as a visible space rather than as itself.
+    // leave the rendered message as visible text rather than as itself — deleted
+    // where it drew nothing, spaced where it occupied width.
     expect(CF_CHARS.length).toBeGreaterThan(100);
 
     for (const char of CF_CHARS) {
@@ -171,7 +194,9 @@ describe("describeHttpFailure — neutralising structure", () => {
 
       expect(message.includes(char), label).toBe(false);
       expect(/\p{Cf}/u.test(message), label).toBe(false);
-      expect(quotedFragment(message), label).toBe("before after");
+      expect(quotedFragment(message), label).toBe(
+        denied(char, "before", "after"),
+      );
     }
   });
 
@@ -201,7 +226,9 @@ describe("describeHttpFailure — neutralising structure", () => {
         message: `visible${char}text`,
       });
       expect(message.includes(char), name).toBe(false);
-      expect(quotedFragment(message), name).toBe("visible text");
+      expect(quotedFragment(message), name).toBe(
+        denied(char, "visible", "text"),
+      );
     }
   });
 
@@ -217,7 +244,11 @@ describe("describeHttpFailure — neutralising structure", () => {
     });
 
     expect(/\p{Cf}/u.test(message)).toBe(false);
-    expect(quotedFragment(message)).toBe("nothing to see here");
+    // Every tag character is deleted, not spaced — which is exactly what the Forge
+    // UI renders, because those six code points advanced the pen by nothing and
+    // "see" and "here" were already touching there. Emitting "see here" would be
+    // this server inventing a word boundary out of the payload it just removed.
+    expect(quotedFragment(message)).toBe("nothing to seehere");
     // The whole message is visible characters, so a human sees what the model sees.
     expect([...message].every((char) => !STRUCTURE.test(char))).toBe(true);
   });
@@ -492,6 +523,158 @@ describe("the credential never appears in a message", () => {
     const message = (failure as ForgeError).message;
     expect(message).not.toContain(TOKEN);
     expect(message.match(/\[redacted\]/g)).toHaveLength(3);
+  });
+});
+
+/**
+ * The invisible characters that split a reflected token in the RAW body and are
+ * then DELETED by the shared rule — fusing the two halves back into a working
+ * credential in the text that is actually emitted.
+ *
+ * Every one of them is `Default_Ignorable_Code_Point`, which is exactly the class
+ * `src/upstream-text.ts` removes rather than spaces, and that is why they are the
+ * dangerous ones: a character that became a space would leave `test- token`, which
+ * is not a credential, while a character that is deleted leaves `test-token`, which
+ * is. The realistic trigger is accidental rather than adversarial — an HTML error
+ * page that soft-hyphenates a long unbreakable header value decodes `&shy;` to
+ * U+00AD, and `readJson` hands a non-JSON body straight to `quoteUpstream`.
+ */
+const INVISIBLE_SPLITTERS: ReadonlyArray<readonly [string, string]> = [
+  ["U+200B ZERO WIDTH SPACE", "​"],
+  ["U+00AD SOFT HYPHEN", "­"],
+  ["U+2060 WORD JOINER", "⁠"],
+  ["U+034F COMBINING GRAPHEME JOINER", "͏"],
+  ["U+FE00 VARIATION SELECTOR-1", "︀"],
+  ["U+E0001 LANGUAGE TAG", "\u{E0001}"],
+  ["U+180E MONGOLIAN VOWEL SEPARATOR", "᠎"],
+];
+
+/** `test-token` with `char` planted inside it, exactly as a reflected header would carry it. */
+const split = (char: string): string =>
+  `${TOKEN.slice(0, 5)}${char}${TOKEN.slice(5)}`;
+
+/**
+ * An obviously fake credential that carries a character the shared rule replaces
+ * with a SPACE rather than deleting — a `\p{Zs}` no-break space.
+ *
+ * It exists to hold the FIRST redaction pass honest. Neutralisation would break
+ * this token into `test- token`, so a redactor that only ran afterwards would never
+ * see it whole and would emit the credential nearly intact.
+ */
+const SPACED_TOKEN = "test- token";
+
+describe("redaction survives neutralisation — both passes", () => {
+  it("does not re-fuse a token an invisible character split, JSON body", async () => {
+    for (const [name, char] of INVISIBLE_SPLITTERS) {
+      // The premise, asserted rather than assumed: this character is deleted, so
+      // the halves around it end up touching.
+      expect(neutraliseUpstreamText(`a${char}b`), name).toBe("ab");
+
+      const forge = fakeFetch({
+        status: 502,
+        body: {
+          message: `Bad gateway. Upstream request headers: Authorization: Bearer ${split(char)}`,
+        },
+      });
+      const client = new ForgeClient({
+        token: TOKEN,
+        fetchImpl: forge.fetchImpl,
+      });
+
+      const failure = await client
+        .request("GET", PATH)
+        .catch((error: unknown) => error);
+
+      const message = (failure as ForgeError).message;
+      expect(message, name).not.toContain(TOKEN);
+      expect(message, name).toContain(`Bearer ${REDACTED_SECRET}`);
+      expect(renderToolFailure(failure, "get_server"), name).not.toContain(
+        TOKEN,
+      );
+    }
+  });
+
+  it("does not re-fuse a token an invisible character split, non-JSON HTML body", async () => {
+    for (const [name, char] of INVISIBLE_SPLITTERS) {
+      // What a proxy actually serves: `&shy;` inside a long header value, decoded.
+      const html = `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: Bearer ${split(char)}</pre></body></html>`;
+      const forge = fakeFetch({ status: 502, text: html });
+      const client = new ForgeClient({
+        token: TOKEN,
+        fetchImpl: forge.fetchImpl,
+      });
+
+      const failure = await client
+        .request("GET", PATH)
+        .catch((error: unknown) => error);
+
+      const message = (failure as ForgeError).message;
+      expect(message, name).toContain("502 Bad Gateway");
+      expect(message, name).not.toContain(TOKEN);
+      expect(message, name).toContain(`Bearer ${REDACTED_SECRET}`);
+      expect(renderToolFailure(failure, "get_server"), name).not.toContain(
+        TOKEN,
+      );
+    }
+  });
+
+  it("redacts a token carrying a character that becomes a space", () => {
+    // The premise: this one is spaced, not deleted, so the emitted form of the
+    // credential is `test- token` and only a pass on the RAW text ever sees it whole.
+    expect(neutraliseUpstreamText(SPACED_TOKEN)).toBe("test- token");
+
+    const message = describeHttpFailure(
+      502,
+      PATH,
+      { message: `Bad gateway. Authorization: Bearer ${SPACED_TOKEN}` },
+      SPACED_TOKEN,
+    );
+
+    expect(message).not.toContain(SPACED_TOKEN);
+    expect(message).not.toContain("test- token");
+    expect(message).toContain(`Bearer ${REDACTED_SECRET}`);
+  });
+
+  it("fails if either redaction pass is removed", () => {
+    // One test, two directions, so neither pass can be deleted quietly.
+    //
+    // Delete the pass that runs BEFORE neutralisation and the spaced token stops
+    // being matched at all: `test- token` becomes `test- token`, which the
+    // later pass — still looking for the raw secret — walks straight past.
+    const spaced = describeHttpFailure(
+      404,
+      PATH,
+      `Bearer ${SPACED_TOKEN}`,
+      SPACED_TOKEN,
+    );
+    expect(spaced).toContain(REDACTED_SECRET);
+    expect(spaced).not.toContain("test- token");
+
+    // Delete the pass that runs AFTER it and the zero-width split survives the raw
+    // pass unmatched, then the deletion reassembles the credential in the emitted
+    // message.
+    const fused = describeHttpFailure(
+      404,
+      PATH,
+      `Bearer ${split("​")}`,
+      TOKEN,
+    );
+    expect(fused).toContain(REDACTED_SECRET);
+    expect(fused).not.toContain(TOKEN);
+  });
+
+  it("still redacts when the split token sits past the 200-character bound", () => {
+    // Redaction of the flattened text runs before truncation, so the bound is not
+    // what is doing the work here — but nothing may leak on the way to it either.
+    const message = describeHttpFailure(
+      404,
+      PATH,
+      { message: `${"prose ".repeat(32)}Bearer ${split("​")}` },
+      TOKEN,
+    );
+
+    expect(message).not.toContain(TOKEN);
+    expect(quotedFragment(message)).toHaveLength(MAX_UPSTREAM_DETAIL);
   });
 });
 

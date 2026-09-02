@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ForgeError } from "../errors.js";
+import { boundToLength, neutraliseUpstreamText } from "../upstream-text.js";
 
 /**
  * The parts every read tool shares: argument validation, cursor pagination, and the
@@ -16,8 +17,13 @@ import { ForgeError } from "../errors.js";
  *    each through a coercer. An attribute Forge adds later — `system_prompt`,
  *    `note`, anything — is dropped because nothing copies it, not because something
  *    filters it out.
- * 2. Every scalar is bounded. A name is a name, not the 40KB of prose a compromised
- *    account could put in one, replayed into context on every later call.
+ * 2. Every scalar is bounded, and neutralised. A name is a name, not the 40KB of
+ *    prose a compromised account could put in one, replayed into context on every
+ *    later call — and not a line of characters no human reading the transcript can
+ *    see. What counts as visible is `src/upstream-text.ts`'s decision, the same one
+ *    the failure path in `src/errors.ts` applies: this is the far larger surface of
+ *    the two (tens of thousands of characters on an ordinary listing against two
+ *    hundred on an error), so it is the one that must not be the unhardened half.
  * 3. The whole result is bounded too. Per-field caps bound one value and say nothing
  *    about a hundred rows of them, so `MAX_RESULT_CHARS` bounds what one call can
  *    spend, and the rows it holds back are reported rather than dropped in silence.
@@ -51,15 +57,38 @@ const MAX_LIST_ITEMS = 25;
  * what the bound removed, so a truncated answer can never read as a complete one.
  *
  * 60,000 characters — roughly 15k tokens, a large but survivable slice of a context
- * window, and more than a legitimate full page of 100 rows needs. It is measured on
- * each row's SERIALISED form, so escaping counts toward the budget instead of hiding
- * under it, and it sits deliberately above the ~50,000 characters the field caps
- * allow a single worst-case row: a page therefore always carries at least one row,
- * because a budget that can return nothing is a denial of service an upstream
- * payload gets to trigger. Detail tools return one such row and are already bounded
- * by the field caps, so the budget belongs on the list path.
+ * window, and more than a legitimate full page of 100 rows needs.
+ *
+ * It is measured on THE ARTIFACT THIS SERVER ACTUALLY EMITS: `src/index.ts` renders
+ * a result as `JSON.stringify(result, null, 2)`, so that is what `emittedForm`
+ * produces and what every row is costed against. Measuring anything else is not a
+ * smaller bound, it is a wrong one — costing rows as compact `JSON.stringify(row)`
+ * let a declared 60,000 admit 109,199 characters on the wire, because indentation,
+ * the envelope, `data_notice`, `notes` and `next_cursor` were all outside the
+ * accounting. Nothing is outside it now: the number is the whole emitted document.
+ *
+ * A page always carries at least one row, whatever that row costs — a budget that
+ * can return nothing is a denial of service an upstream payload gets to trigger —
+ * and 60,000 sits well above the 17,216 characters a single worst-case row emits —
+ * measured, escaping and pretty-printing included, not estimated — so that clause is
+ * a guarantee rather than a routine over-spend. Detail tools
+ * return one such row and are already bounded by the field caps, so the budget
+ * belongs on the list path.
  */
 export const MAX_RESULT_CHARS = 60_000;
+
+/**
+ * A result as it reaches the agent.
+ *
+ * `src/index.ts` puts `JSON.stringify(result, null, 2)` into the tool result's text
+ * content; this is that same rendering, named, so the budget can be enforced against
+ * the emitted document rather than against an estimate of it. Exported because the
+ * suite asserts against the wire form too — a future divergence between what is
+ * measured and what is sent should fail CI, not go quietly.
+ */
+export function emittedForm(result: unknown): string {
+  return JSON.stringify(result, null, 2);
+}
 
 /**
  * What stands in front of every record a tool returns.
@@ -213,22 +242,33 @@ function readPageInfo(meta: unknown): PageInfo {
   };
 }
 
-/** A page of projected rows, and everything a caller needs to read it correctly. */
-export interface PagedRows<T> extends PageInfo {
-  rows: T[];
-  count: number;
-  /**
-   * Anything about THIS page a caller would otherwise have to infer, said in
-   * words. Empty on an unremarkable page — which is the common case, so the
-   * presence of an entry is itself the signal.
-   */
-  notes: string[];
-}
+/**
+ * A whole list result, exactly as it is emitted.
+ *
+ * The rows live under the collection's own name (`servers`, `sites`) rather than a
+ * generic `rows`, so this type describes the emitted document and not a fragment a
+ * tool then wraps — which is the point: the budget can only be enforced against the
+ * document if the document is what this module builds.
+ */
+export type ListResult<K extends string, T> = { data_notice: string } & Record<
+  K,
+  T[]
+> & {
+    count: number;
+    next_cursor: string | null;
+    has_more: boolean;
+    /**
+     * Anything about THIS page a caller would otherwise have to infer, said in
+     * words. Empty on an unremarkable page — which is the common case, so the
+     * presence of an entry is itself the signal.
+     */
+    notes: string[];
+  };
 
 /**
- * Assembles the pagination half of a list result.
+ * Assembles the whole of a list result: label, rows, pagination and notes.
  *
- * Three things go wrong quietly here, and none is left to inference:
+ * Four things go wrong quietly here, and none is left to inference:
  *
  * 1. `page_size` bounds the REQUEST. Forge decides what it actually sends, and a
  *    500-row answer to a request for 50 is a third of a megabyte spent in the
@@ -244,53 +284,66 @@ export interface PagedRows<T> extends PageInfo {
  *    unreadable: two fields a model was never told to compare, whose combination
  *    means "rows are missing and cannot be fetched". It is spelled out instead of
  *    being left as a puzzle whose wrong answer is "that was everything".
+ * 4. The rows are not the result. The envelope, the standing label, the notes and
+ *    the cursor are characters in the agent's context too, and the notes are at
+ *    their longest exactly when the page is at its fullest. So the candidate result
+ *    is built in full and measured in full, by `fitBudget` calling `build` — the
+ *    budget covers everything this function returns, not the rows alone.
  */
-export function paginate<T>(
+export function pagedList<K extends string, T>(
+  collection: K,
   rows: T[],
   page: PageArgs,
   meta: unknown,
-): PagedRows<T> {
+): ListResult<K, T> {
   const upstream = readPageInfo(meta);
-  const notes: string[] = [];
 
   const clamped =
     rows.length > page.pageSize ? rows.slice(0, page.pageSize) : rows;
   const dropped = rows.length - clamped.length;
-  const kept = fitBudget(clamped);
-  const withheld = clamped.length - kept.length;
-  // Rows were held back, so rows certainly remain — whatever `meta` claimed.
-  const has_more = upstream.has_more || dropped > 0 || withheld > 0;
 
-  if (dropped > 0) {
-    notes.push(
-      `Forge ignored page_size: it returned ${rows.length} rows for a request of ${page.pageSize}. Only the first ${clamped.length} are kept and ${dropped} ${were(dropped)} dropped to keep this result a readable size. next_cursor, where present, continues after all ${rows.length} rows, so the dropped rows are not reachable by paging.`,
-    );
-  }
+  const build = (kept: T[]): ListResult<K, T> => {
+    const withheld = clamped.length - kept.length;
+    const notes: string[] = [];
+    // Rows were held back, so rows certainly remain — whatever `meta` claimed.
+    const has_more = upstream.has_more || dropped > 0 || withheld > 0;
 
-  if (withheld > 0) {
-    notes.push(
-      `This page stops early at the ${MAX_RESULT_CHARS}-character total output budget: ${kept.length} of the ${clamped.length} rows ${is_are(kept.length)} shown and ${withheld} ${were(withheld)} withheld, so this is a partial answer and not the whole page. next_cursor, where present, continues after all ${rows.length} rows Forge returned, so the withheld rows are not reachable by paging — ask again with a smaller page_size to walk them in pieces Forge will hand a cursor for.`,
-    );
-  }
+    if (dropped > 0) {
+      notes.push(
+        `Forge ignored page_size: it returned ${rows.length} rows for a request of ${page.pageSize}. Only the first ${clamped.length} are kept and ${dropped} ${were(dropped)} dropped to keep this result a readable size. next_cursor, where present, continues after all ${rows.length} rows, so the dropped rows are not reachable by paging.`,
+      );
+    }
 
-  if (
-    dropped === 0 &&
-    withheld === 0 &&
-    has_more &&
-    upstream.next_cursor === null
-  ) {
-    notes.push(
-      "More rows exist, but Forge did not return a pagination cursor this server can use, so there is no way to ask for them. Treat this page as incomplete rather than as the whole list.",
-    );
-  }
+    if (withheld > 0) {
+      notes.push(
+        `This page stops early at the ${MAX_RESULT_CHARS}-character total output budget: ${kept.length} of the ${clamped.length} rows ${is_are(kept.length)} shown and ${withheld} ${were(withheld)} withheld, so this is a partial answer and not the whole page. next_cursor, where present, continues after all ${rows.length} rows Forge returned, so the withheld rows are not reachable by paging — ask again with a smaller page_size to walk them in pieces Forge will hand a cursor for.`,
+      );
+    }
 
-  return {
-    rows: kept,
-    count: kept.length,
-    next_cursor: upstream.next_cursor,
-    has_more,
-    notes,
+    if (
+      dropped === 0 &&
+      withheld === 0 &&
+      has_more &&
+      upstream.next_cursor === null
+    ) {
+      notes.push(
+        "More rows exist, but Forge did not return a pagination cursor this server can use, so there is no way to ask for them. Treat this page as incomplete rather than as the whole list.",
+      );
+    }
+
+    // The computed key is what makes this one function serve every collection; TS
+    // widens `{ [k: string]: ... }` out of a computed property, so the shape is
+    // asserted back to the one this function's signature already promises.
+    return withDataNotice({
+      [collection]: kept,
+      count: kept.length,
+      next_cursor: upstream.next_cursor,
+      has_more,
+      notes,
+    }) as unknown as ListResult<K, T>;
   };
+
+  return build(fitBudget(clamped, build));
 }
 
 /** "1 was dropped", not "1 were dropped". */
@@ -304,24 +357,49 @@ function is_are(count: number): string {
 }
 
 /**
- * Takes rows in order until the next one would breach `MAX_RESULT_CHARS`.
+ * The longest prefix of `rows` whose assembled result fits `MAX_RESULT_CHARS`.
  *
- * Cost is the row's own serialised length, which is what the result actually spends
- * once escaping has done its worst. The first row is taken whatever it costs: the
- * field caps keep any single row well under the budget, and an empty page would hand
- * an upstream payload a way to answer every question with nothing.
+ * Nothing here estimates. `build` is the same function that produces the returned
+ * result, `emittedForm` is the same rendering `src/index.ts` sends, so every
+ * candidate is weighed as the document the agent will actually receive —
+ * indentation, envelope, label, notes and cursor included. A per-row cost model is
+ * what let the previous bound be wrong by 82%: it is not that the model was
+ * inaccurate, it is that a model of the artifact is not the artifact.
+ *
+ * A full page fits in the overwhelming majority of calls, so that is one
+ * measurement; only an oversized page pays for the binary search, and that costs
+ * about seven more. The search assumes a longer prefix is a longer document, which
+ * is true up to the handful of digits a note spends on its own counts — and even
+ * where that assumption slips, every answer it can return has been measured to fit,
+ * which is the property that matters.
+ *
+ * The first row is taken whatever it costs: a worst-case row emits 17,216
+ * characters against a 60,000 budget, so this is a guarantee against an empty page
+ * rather than a routine over-spend, and an empty page would hand an upstream payload
+ * a way to answer every question with nothing. That figure is measured through
+ * `emittedForm`, so it counts the pretty-printed indentation and key names as well
+ * as the values — and it counts JSON's escaping of them: `"` and `\` are
+ * punctuation, so the allowlist admits them and every one costs two characters on
+ * the wire rather than one. A row of quotes is therefore worth 17,216 where the same
+ * row of letters is worth 8,992, and the estimate this replaces was low by that
+ * factor because it costed the characters rather than the document.
  */
-function fitBudget<T>(rows: T[]): T[] {
-  const kept: T[] = [];
-  let spent = 0;
+function fitBudget<T>(rows: T[], build: (kept: T[]) => unknown): T[] {
+  const fits = (kept: T[]): boolean =>
+    emittedForm(build(kept)).length <= MAX_RESULT_CHARS;
 
-  for (const row of rows) {
-    const cost = JSON.stringify(row).length;
-    if (kept.length > 0 && spent + cost > MAX_RESULT_CHARS) break;
-    kept.push(row);
-    spent += cost;
+  if (rows.length === 0 || fits(rows)) return rows;
+
+  // `low` is the largest prefix known to fit — one row, by the rule above, whatever
+  // it measures — and `high` the largest that might.
+  let low = 1;
+  let high = rows.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(rows.slice(0, mid))) low = mid;
+    else high = mid - 1;
   }
-  return kept;
+  return rows.slice(0, low);
 }
 
 /**
@@ -389,11 +467,22 @@ export function items(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-/** A bounded string, or null. Anything non-string becomes null, not "[object Object]". */
+/**
+ * A neutralised, bounded string, or null. Anything non-string becomes null, not
+ * "[object Object]".
+ *
+ * Every upstream string a tool returns passes through here — that is what makes one
+ * coercer enough to cover the whole success path, and it is why the neutralisation
+ * belongs here rather than in each projection. The order is: make it visible, then
+ * bound what is left. Bounding first would count characters that are about to be
+ * removed, and `boundToLength` rather than `slice` because a cut through the middle
+ * of an emoji leaves a lone surrogate — re-introducing, at the last step, exactly
+ * the kind of character the first step exists to remove.
+ */
 export function text(value: unknown, max = MAX_TEXT): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, max) : null;
+  const visible = neutraliseUpstreamText(value);
+  return visible ? boundToLength(visible, max) : null;
 }
 
 /** A bounded URL-ish string. */

@@ -14,7 +14,7 @@ related:
   - "[[organization-resolution]]"
   - "[[error-messages]]"
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # Configuring forge-mcp
@@ -48,7 +48,12 @@ Every one of these is permanent for the life of the running process — the serv
 
 ## Request timeout
 
-Every Forge API request is capped at 30 seconds. If Forge itself hangs, forge-mcp reports a failed call rather than hanging indefinitely — there is nothing to configure here.
+Every Forge API request is capped at 30 seconds. If Forge itself hangs, forge-mcp aborts the call and reports the timeout rather than hanging indefinitely — there is nothing to configure here.
+
+Read that report for what it says, which is narrower than "the call failed": no answer came back within 30 seconds. The request may well have reached Forge and been carried out in full, with only the reply lost on the way back.
+
+- **Every tool this server exposes today only reads** — listing servers, listing sites, fetching one server. A timeout on one of those costs nothing but a wasted round trip, so just ask again.
+- **Once a tool can change something** — trigger a deployment, reboot a server, rewrite a deployment script — a timeout on it is an *unknown* outcome, not a failed one. Do not repeat the call, and do not let an agent repeat it, on the assumption that nothing happened: check in the Forge dashboard, or with a read-only tool, whether the action actually took effect, and send it again only if it did not.
 
 ## See also
 
