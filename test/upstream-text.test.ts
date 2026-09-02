@@ -1,4 +1,13 @@
-import { readFileSync, readdirSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -481,6 +490,31 @@ describe("the neutralisation rule fails closed", () => {
  * lives in the error module and is copied into the tool module is a rule with a
  * weaker half waiting to happen.
  */
+/**
+ * Every `.ts` file under `root`, at any depth, as paths joined onto `root`.
+ *
+ * The guard below used to enumerate `src` and `src/tools` with two hand-written
+ * `readdirSync` calls, which made it a guard over two named directories rather than
+ * over the rule. A second Unicode character class in any directory added later —
+ * `src/text/`, say — passed CI in silence, because nothing looked there. The walk
+ * recurses instead, so a directory is covered by the commit that creates it and not
+ * by somebody remembering to extend this list.
+ */
+function typeScriptFilesUnder(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) return typeScriptFilesUnder(path);
+      return entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
+    })
+    .sort();
+}
+
+/** The guard's own predicate: does this file define a Unicode character class? */
+function definersAmong(files: string[]): string[] {
+  return files.filter((file) => /\\p\{/.test(readFileSync(file, "utf8")));
+}
+
 describe("one rule, both paths", () => {
   it("gives the same answer on both paths for every hostile input", async () => {
     for (const [name, char] of Object.entries({ ...DELETED, ...SPACED })) {
@@ -501,11 +535,20 @@ describe("one rule, both paths", () => {
     }
   });
 
-  it("defines the rule in exactly one file", () => {
+  it("defines the rule in exactly one file, anywhere under src/", () => {
     // A Unicode character class anywhere else in src/ is a second definition of
     // "safe", and a second definition is the divergence itself — this fails on the
     // commit that introduces one, not on the incident that exploits it.
-    const sources = [
+    expect(definersAmong(typeScriptFilesUnder("src"))).toEqual([
+      "src/upstream-text.ts",
+    ]);
+  });
+
+  it("still covers every file the hand-written walk used to enumerate", () => {
+    // The recursion is a widening, never a narrowing: whatever the two `readdirSync`
+    // calls this replaced would have scanned is still scanned.
+    const walked = typeScriptFilesUnder("src");
+    const handWritten = [
       ...readdirSync("src")
         .filter((entry) => entry.endsWith(".ts"))
         .map((entry) => `src/${entry}`),
@@ -514,11 +557,37 @@ describe("one rule, both paths", () => {
         .map((entry) => `src/tools/${entry}`),
     ];
 
-    const definers = sources.filter((file) =>
-      /\\p\{/.test(readFileSync(file, "utf8")),
-    );
+    expect(handWritten.length).toBeGreaterThan(1);
+    for (const file of handWritten) expect(walked).toContain(file);
+    expect(walked.length).toBeGreaterThanOrEqual(handWritten.length);
+  });
 
-    expect(definers).toEqual(["src/upstream-text.ts"]);
+  it("catches a second definition in a directory nobody has created yet", () => {
+    // Stage 3 adds write tools, and plausibly directories to hold them. The proof
+    // that the guard survives that is a tree with a nested definer in it — built in
+    // a temp directory, because a decoy committed under src/ would fail the suite
+    // for real. `src/text/second.ts` is the exact file that used to slip through.
+    const root = mkdtempSync(join(tmpdir(), "forge-mcp-guard-"));
+    try {
+      mkdirSync(join(root, "text", "deep"), { recursive: true });
+      writeFileSync(
+        join(root, "upstream-text.ts"),
+        "export const RULE = /[^\\p{L}]/gu;\n",
+      );
+      writeFileSync(join(root, "client.ts"), "export const TIMEOUT = 30_000;\n");
+      writeFileSync(
+        join(root, "text", "deep", "second.ts"),
+        "export const SECOND_RULE = /[\\p{Cf}\\p{Cc}]/gu;\n",
+      );
+
+      const definers = definersAmong(typeScriptFilesUnder(root));
+
+      expect(definers).toContain(join(root, "text", "deep", "second.ts"));
+      // Which is exactly what makes the assertion above fail rather than pass.
+      expect(definers).not.toEqual([join(root, "upstream-text.ts")]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("has both paths importing that one file", () => {

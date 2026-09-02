@@ -14,7 +14,7 @@ related:
   - "[[configuration]]"
   - "[[error-rendering]]"
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # Organization resolution & request timeout
@@ -54,7 +54,15 @@ The one exception to "the cache holds no upstream strings" is the `ambiguous` ve
 
 ## Request timeout
 
-`ForgeClient.request()` (`src/client.ts`) aborts any request that runs past `REQUEST_TIMEOUT_MS` (30 seconds), via `AbortSignal.timeout()`. `fetch` has no timeout of its own, and because concurrent first calls share one in-flight discovery promise, a single hung connection would otherwise wedge every later tool call behind a promise that can never settle — recoverable only by restarting the process. A timeout is treated as a transport failure: retryable, never cached, same as a `429` or `5xx`.
+`ForgeClient.request()` (`src/client.ts`) aborts any request that runs past `REQUEST_TIMEOUT_MS` (30 seconds), via `AbortSignal.timeout()`. `fetch` has no timeout of its own, and because concurrent first calls share one in-flight discovery promise, a single hung connection would otherwise wedge every later tool call behind a promise that can never settle — recoverable only by restarting the process.
+
+An abort surfaces as a `ForgeError` on the same path as a transport failure, and like one it settles no verdict: the in-flight promise is dropped and the next tool call asks again, exactly as it would after a `429` or a `5xx`.
+
+### A timeout is not a failed call
+
+What the abort establishes is that no answer arrived in time — not that the request never landed. It may have been received and executed in full, with only the reply lost on the way back. For `GET /orgs`, and for a read generally, that distinction is academic: the call is idempotent, so re-asking costs at worst a round trip, which is why the resolver may retry it freely. For a write — a deployment triggered, a server rebooted, a deployment script rewritten — the distinction is the whole question, because sending the request again can perform the action a second time.
+
+So a timed-out write is an **unknown** outcome, not a failed one. Neither `ForgeClient` nor the agent above it may retry one on the assumption that nothing happened; the remedy is to read the resource back, establish what the state actually is, and let the caller decide deliberately whether to send it again.
 
 ## Connects to
 
