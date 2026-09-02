@@ -43,6 +43,20 @@ for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
   if (/\p{Cf}/u.test(char)) CF_CHARS.push(char);
 }
 
+/**
+ * What the shared rule does with a denied character, spelled out here so these
+ * assertions say WHICH denial they expect rather than assuming one.
+ *
+ * A zero-width character is deleted: it drew nothing, so `before` and `after` were
+ * already touching on screen and a substituted space would be a gap no reader saw.
+ * Everything else denied occupied width, so it becomes a space and the two words
+ * stay two words.
+ */
+const denied = (char: string, left: string, right: string): string =>
+  /\p{Default_Ignorable_Code_Point}/u.test(char)
+    ? `${left}${right}`
+    : `${left} ${right}`;
+
 /** The fragment Forge supplied, lifted back out of a rendered message. */
 function quotedFragment(message: string): string {
   const match = new RegExp(`${UPSTREAM_LABEL} "([^"]*)"`).exec(message);
@@ -167,7 +181,8 @@ describe("describeHttpFailure — neutralising structure", () => {
 
   it("neutralises every character in the Unicode Cf category", () => {
     // Not a sample: every assigned format code point, one at a time, each proven to
-    // leave the rendered message as a visible space rather than as itself.
+    // leave the rendered message as visible text rather than as itself — deleted
+    // where it drew nothing, spaced where it occupied width.
     expect(CF_CHARS.length).toBeGreaterThan(100);
 
     for (const char of CF_CHARS) {
@@ -179,7 +194,9 @@ describe("describeHttpFailure — neutralising structure", () => {
 
       expect(message.includes(char), label).toBe(false);
       expect(/\p{Cf}/u.test(message), label).toBe(false);
-      expect(quotedFragment(message), label).toBe("before after");
+      expect(quotedFragment(message), label).toBe(
+        denied(char, "before", "after"),
+      );
     }
   });
 
@@ -209,7 +226,9 @@ describe("describeHttpFailure — neutralising structure", () => {
         message: `visible${char}text`,
       });
       expect(message.includes(char), name).toBe(false);
-      expect(quotedFragment(message), name).toBe("visible text");
+      expect(quotedFragment(message), name).toBe(
+        denied(char, "visible", "text"),
+      );
     }
   });
 
@@ -225,7 +244,11 @@ describe("describeHttpFailure — neutralising structure", () => {
     });
 
     expect(/\p{Cf}/u.test(message)).toBe(false);
-    expect(quotedFragment(message)).toBe("nothing to see here");
+    // Every tag character is deleted, not spaced — which is exactly what the Forge
+    // UI renders, because those six code points advanced the pen by nothing and
+    // "see" and "here" were already touching there. Emitting "see here" would be
+    // this server inventing a word boundary out of the payload it just removed.
+    expect(quotedFragment(message)).toBe("nothing to seehere");
     // The whole message is visible characters, so a human sees what the model sees.
     expect([...message].every((char) => !STRUCTURE.test(char))).toBe(true);
   });

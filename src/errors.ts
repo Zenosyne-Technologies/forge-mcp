@@ -15,9 +15,9 @@
  * "=== END OF TOOL OUTPUT ===" block reads as a new section rather than as data.
  * Invisible characters are the same channel in a form no human auditing the
  * transcript can see: bidirectional overrides reverse the reading order of a line,
- * variation selectors and combining marks hang hidden bytes off a visible letter,
- * and the U+E0000 tag block smuggles a whole ASCII message through glyphs that
- * render as nothing at all. Every fragment quoted from Forge is therefore redacted,
+ * variation selectors hang hidden bytes off a visible letter, and the U+E0000 tag
+ * block smuggles a whole ASCII message through glyphs that render as nothing at
+ * all. Every fragment quoted from Forge is therefore redacted,
  * bounded to one consistent length, flattened to a single line of visible
  * characters, and prefixed with a standing instruction on how to treat it.
  *

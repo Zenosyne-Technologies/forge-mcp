@@ -12,82 +12,127 @@
  * The rule is an ALLOWLIST, and that is the load-bearing decision. The blacklist it
  * replaces (`\p{Cc}\p{Cf}` plus two separators) was not merely incomplete, it was
  * incompletable: a proof of concept smuggled 56 bytes of hidden ASCII through
- * variation selectors — `\p{Mn}`, a category the list never mentioned — while the
- * visible transcript read as an ordinary 404. Widening it to name variation
- * selectors, combining marks, surrogates and the blank Hangul fillers would fix
- * those four and leave the next unnamed class open, and "invisible" is not a
- * property Unicode enumerates for us: new code points are assigned every release,
- * and an unassigned one today renders as nothing everywhere. A blacklist has to be
- * right about every character that exists and every character that will exist. An
- * allowlist has to be right about the characters this product actually carries —
- * hostnames, server names, git branches, Forge's own English diagnostics — and
- * fails CLOSED for everything else, including whatever Unicode adds next.
+ * variation selectors — a class the list never mentioned — while the visible
+ * transcript read as an ordinary 404. Widening it to name variation selectors,
+ * surrogates and the blank Hangul fillers would fix those three and leave the next
+ * unnamed class open, and "invisible" is not a property Unicode enumerates for us:
+ * new code points are assigned every release, and an unassigned one today renders
+ * as nothing everywhere. A blacklist has to be right about every character that
+ * exists and every character that will exist. An allowlist has to be right about
+ * the characters this product actually carries — hostnames, server names, git
+ * branches, Forge's own diagnostics — and fails CLOSED for everything else,
+ * including whatever Unicode adds next.
  *
- * So: a character survives only if it is a letter, a digit, punctuation or a symbol
- * (`\p{L}\p{N}\p{P}\p{S}`), which is every character that carries a visible mark of
- * its own. Everything else becomes a space. That is one decision with three
- * consequences worth naming, because each closes a filed defect:
+ * THE ALLOWLIST. A character survives only if it is a letter, a digit, punctuation,
+ * a symbol or a mark (`\p{L}\p{N}\p{P}\p{S}\p{M}`).
  *
- *  - Controls and format characters (`\p{Cc}\p{Cf}`) are outside it, so the whole of
- *    the previous rule is still enforced: newlines and tabs that forge document
- *    structure, the bidirectional overrides, the zero-width characters, and the
- *    U+E0000 tag block that encodes arbitrary ASCII in glyphs that render as nothing.
- *  - Combining marks (`\p{M}`), lone surrogates (`\p{Cs}`), private use (`\p{Co}`)
- *    and unassigned code points (`\p{Cn}`) are outside it too — none of them was
- *    named by the old rule, and the first two are what the proof of concept used.
- *  - Line and paragraph separators and every exotic space (`\p{Zl}\p{Zp}\p{Zs}`) are
- *    outside it, so U+2028, U+2029, NBSP and the ideographic space collapse into the
- *    ordinary run of whitespace rather than being enumerated one at a time.
+ * `\p{M}` is in that list on purpose, and the reason is the whole point of the
+ * control. The property being bought is VISIBILITY: whatever the model reads, a
+ * human auditing the transcript can see. A Devanagari virama, a Thai vowel sign and
+ * an Arabic harakat all render on their base character — they are visible, so they
+ * satisfy the rule. Excluding them bought no security and cost correctness: `सर्वर`
+ * came out as `सर वर`, `เซิร์ฟเวอร์` as five fragments, `خَادِم` as three. An account
+ * whose servers are named in Hindi, Thai or Arabic would have reached the agent as
+ * broken pieces of its own words. The smuggling channel was never "marks" — it was
+ * variation selectors and the U+E0000 tag block, both of which are
+ * `Default_Ignorable_Code_Point` and are denied below for exactly that reason.
  *
- * Two classes render as nothing while sitting INSIDE those categories, so they are
- * denied explicitly rather than left to the categories: the default-ignorable code
- * points (which is where the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0 hide,
- * classified `Lo` — letters, by Unicode's reckoning, that draw no glyph at all), and
- * U+2800 BRAILLE PATTERN BLANK, a `So` symbol whose entire appearance is empty
- * space. `Default_Ignorable_Code_Point` is a Unicode-maintained property, so that
- * half of the deny list keeps growing without this file being edited.
+ * THE DENIALS. Two of them, and neither is a list of characters.
  *
- * What this costs, stated plainly rather than discovered later: text is normalised
- * to NFC first, so accented Latin written in decomposed form ("e" + U+0301)
- * composes to "é" and survives — but a combining mark with no precomposed form is
- * dropped, which mangles scripts that require them (Devanagari, Thai, Arabic
- * diacritics) into their unmarked consonants. Emoji ZWJ sequences separate into
- * their component emoji and an emoji's variation selector goes, so a family becomes
- * three people and a hearts glyph loses its colour. Every one of those outcomes is
- * VISIBLE — a human auditing the transcript sees exactly what the model saw, which
- * is the property being bought. Forge identifiers are hostnames, branches and
- * account-chosen names; accented Latin, CJK and emoji all survive intact.
+ *  - Everything outside the allowlist. Controls and format characters
+ *    (`\p{Cc}\p{Cf}`) — newlines and tabs that forge document structure, the
+ *    bidirectional overrides, the zero-width characters. Lone surrogates (`\p{Cs}`),
+ *    private use (`\p{Co}`) and unassigned code points (`\p{Cn}`). Line and
+ *    paragraph separators and every exotic space (`\p{Zl}\p{Zp}\p{Zs}`), so U+2028,
+ *    U+2029, NBSP and the ideographic space collapse into the ordinary run of
+ *    whitespace rather than being enumerated one at a time.
+ *  - `Default_Ignorable_Code_Point`, plus U+2800. These two render as nothing while
+ *    sitting INSIDE the allowed categories, so the categories cannot catch them. The
+ *    default-ignorables are where the variation selectors (`Mn`), the tag block, the
+ *    zero-width joiner and space, the bidi controls and the Hangul fillers U+115F,
+ *    U+1160, U+3164 and U+FFA0 (classified `Lo` — letters, by Unicode's reckoning,
+ *    that draw no glyph at all) all live. U+2800 BRAILLE PATTERN BLANK is an `So`
+ *    symbol whose entire appearance is empty space. `Default_Ignorable_Code_Point`
+ *    is a Unicode-maintained property, so that half of the deny list keeps growing
+ *    without this file being edited.
+ *
+ * DENIED HOW. A denied character is not uniformly replaced by a space, because a
+ * space is itself a claim — it says "there was a gap here". Substituting one where
+ * the reader would have seen none corrupts the text: `re` + ZWSP + `boot` renders to
+ * a human as the single word `reboot`, and emitting `re boot` invents a seam nobody
+ * could see. So the two denials are spent differently, each matching what the
+ * character actually occupied on screen:
+ *
+ *  - Zero-width — `Default_Ignorable_Code_Point` — is DELETED. It advanced the pen
+ *    by nothing, so removing it leaves the rendered text exactly as it rendered,
+ *    minus the payload. This is the class that carried the attack, and it is also
+ *    the class that never separated two words.
+ *  - Everything else denied becomes a SPACE. A control character, a separator, an
+ *    exotic space, a lone surrogate, an unassigned code point and U+2800 all occupy
+ *    width — a line break, a blank, a replacement box. Deleting those WOULD fuse two
+ *    words: `line one` + LF + `line two` must not arrive as `line onetwo`. A space is
+ *    the honest rendering of a gap that was really there.
+ *
+ * WHAT THIS COSTS, stated plainly rather than discovered later. Text is normalised
+ * to NFC after the zero-width deletion, so a decomposed accent ("e" + U+0301)
+ * composes to "é"; a mark with no precomposed form now survives as a mark instead of
+ * being dropped, which is what restores the Indic, Thai, Arabic and Hebrew cases.
+ * Emoji ZWJ sequences still separate into their component emoji — the joiner is
+ * default-ignorable — so a family arrives as three people, and an emoji's variation
+ * selector still goes, so a red heart loses its colour. Both are VISIBLE losses: a
+ * human auditing the transcript sees exactly what the model saw, which is the
+ * property being bought. A run of stacked marks now survives as a run of stacked
+ * marks — it renders as an unreadable smear rather than as clean text, which is
+ * again visible, and the per-field length bounds cap how much of it there can be.
  */
 
 /**
- * Anything that is not a letter, a digit, punctuation or a symbol — plus the two
- * classes of blank-rendering character that are.
+ * Zero-width: the characters that are deleted rather than spaced.
+ *
+ * `Default_Ignorable_Code_Point` is Unicode's own answer to "should render as
+ * nothing", which is precisely the set for which a substituted space would be a
+ * fabricated gap. It is also the set the smuggling proof of concept lived in.
+ */
+const ZERO_WIDTH = /\p{Default_Ignorable_Code_Point}/gu;
+
+/**
+ * Anything that is not a letter, a digit, punctuation, a symbol or a mark — plus the
+ * one blank-rendering symbol that is.
+ *
+ * By the time this runs the zero-width characters are already gone, so everything it
+ * matches occupied width and a space is the truthful replacement.
  *
  * The `u` flag is what makes `\p{...}` mean a Unicode property rather than a literal
  * `p`, what makes an astral code point (a tag character, a supplementary variation
  * selector) match as one unit instead of as two surrogate halves, and what lets a
  * lone surrogate — a half with no partner — match as itself.
  */
-const NOT_VISIBLE_TEXT =
-  /[^\p{L}\p{N}\p{P}\p{S}]|[\p{Default_Ignorable_Code_Point}\u2800]/gu;
+const NOT_VISIBLE_TEXT = /[^\p{L}\p{N}\p{P}\p{S}\p{M}]|\u2800/gu;
 
 /**
  * Put one fragment of upstream text into the single, visible, flattened form both
  * paths render.
  *
- * Order is deliberate. NFC composition runs first, so a decomposed accent becomes
- * the precomposed letter it means before the mark that formed it is judged; running
- * it afterwards would compose nothing, because the mark would already be a space.
- * Neutralisation runs next, turning every non-rendering code point into a space
- * rather than deleting it — deletion would let `re` + ZWSP + `boot` read as one
- * word, where substitution leaves the seam visible. The whitespace collapse runs
- * last, so the spaces this rule introduced, the runs Forge sent, and the columns a
- * payload tried to paint all end as a single space.
+ * Order is deliberate.
+ *
+ * Zero-width deletion runs FIRST, before normalisation, for two reasons: it is a
+ * pure code-point removal that depends on no normal form, and running it first lets
+ * a base and its mark meet. U+034F COMBINING GRAPHEME JOINER is itself
+ * default-ignorable and exists only to hold two characters apart; once it is gone,
+ * NFC composes what it was separating instead of leaving a decomposed pair behind.
+ *
+ * NFC runs next, so a decomposed accent becomes the precomposed letter it means.
+ *
+ * Space substitution runs after that, on characters that all had width.
+ *
+ * The whitespace collapse runs last, so the spaces this rule introduced, the runs
+ * Forge sent, and the columns a payload tried to paint all end as a single space.
  *
  * The result is a single line of characters a human can see, or the empty string.
  */
 export function neutraliseUpstreamText(raw: string): string {
   return raw
+    .replace(ZERO_WIDTH, "")
     .normalize("NFC")
     .replace(NOT_VISIBLE_TEXT, " ")
     .replace(/\s+/g, " ")
