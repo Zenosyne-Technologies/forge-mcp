@@ -15,11 +15,21 @@
  * "=== END OF TOOL OUTPUT ===" block reads as a new section rather than as data.
  * Invisible characters are the same channel in a form no human auditing the
  * transcript can see: bidirectional overrides reverse the reading order of a line,
+ * variation selectors and combining marks hang hidden bytes off a visible letter,
  * and the U+E0000 tag block smuggles a whole ASCII message through glyphs that
  * render as nothing at all. Every fragment quoted from Forge is therefore redacted,
  * bounded to one consistent length, flattened to a single line of visible
  * characters, and prefixed with a standing instruction on how to treat it.
+ *
+ * What counts as a visible character is NOT decided here. It is decided once, in
+ * `src/upstream-text.ts`, and the success path in `src/tools/common.ts` reads the
+ * same decision from the same place — the failure path quotes 200 characters of
+ * upstream text and the success path copies tens of thousands, so the smaller
+ * surface must not be the only hardened one, and two definitions of "safe" are two
+ * definitions that drift.
  */
+import { boundToLength, neutraliseUpstreamText } from "./upstream-text.js";
+
 export class ForgeError extends Error {
   constructor(
     message: string,
@@ -54,22 +64,6 @@ export const UPSTREAM_LABEL =
 
 /** What replaces the API token wherever upstream text echoes it back. */
 export const REDACTED_SECRET = "[redacted]";
-
-/**
- * Everything that could make upstream text read as structure or hide from a human.
- *
- * `Cc` is the control class: C0 (newline, carriage return, tab, NUL and ESC among
- * them), DEL and C1 (NEL included). `Cf` is the format class, which `JSON.stringify`
- * escapes nothing of because none of it is below U+0020: the bidirectional overrides
- * and isolates (U+202D/E, U+2066-2069), the zero-width characters (U+200B-200D,
- * U+2060, U+00AD, U+061C, U+200E/F), the interlinear annotations (U+FFF9-FFFB) and
- * the U+E0000 tag block (U+E0001, U+E0020-U+E007F), which encodes arbitrary ASCII in
- * code points that render as nothing. U+2028/U+2029 are `Zl`/`Zp` rather than `Cc`,
- * so they are named explicitly. The `u` flag is what makes `\p{...}` mean a category
- * and what makes an astral tag character match as one code point instead of two
- * halves of a surrogate pair.
- */
-const STRUCTURE_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 /**
  * Turn an HTTP failure into something an agent can act on.
@@ -165,18 +159,19 @@ function quoteUpstream(raw: string, secret?: string): string | undefined {
   // step — flattening or truncation — can leave a surviving piece of the token.
   const redacted = secret ? raw.split(secret).join(REDACTED_SECRET) : raw;
 
-  const flattened = redacted
-    .replace(STRUCTURE_CHARS, " ")
-    // A quoted fragment must not be able to close its own quote, and the delimiter
-    // stays readable if it never has to be escaped.
-    .replace(/"/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
+  // The shared rule decides what survives; this path adds one thing on top of it.
+  // A quoted fragment must not be able to close its own quote — a hazard that
+  // exists here and only here, because this is the one place a fragment is spliced
+  // into a delimiter this module hand-writes rather than into a JSON string
+  // `JSON.stringify` escapes. Swapping rather than escaping keeps the delimiter
+  // readable, and it is applied after neutralisation so the swap cannot be the step
+  // that introduces something unreadable.
+  const flattened = neutraliseUpstreamText(redacted).replace(/"/g, "'");
   if (!flattened) return undefined;
 
   const bounded =
     flattened.length > MAX_UPSTREAM_DETAIL
-      ? `${flattened.slice(0, MAX_UPSTREAM_DETAIL - 1)}…`
+      ? `${boundToLength(flattened, MAX_UPSTREAM_DETAIL - 1)}…`
       : flattened;
   return `${UPSTREAM_LABEL} "${bounded}"`;
 }

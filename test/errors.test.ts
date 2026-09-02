@@ -10,6 +10,7 @@ import {
   renderToolFailure,
 } from "../src/errors.js";
 import { OrganizationResolver } from "../src/org.js";
+import { neutraliseUpstreamText } from "../src/upstream-text.js";
 import { fakeFetch, fixture } from "./support/fake-fetch.js";
 
 /** Obviously fake. A real Forge credential never enters this repository. */
@@ -18,15 +19,22 @@ const TOKEN = "test-token";
 const PATH = "/orgs/zenosyne-ltd/servers/1";
 
 /**
- * Anything that would let upstream text stop being a quoted fragment.
+ * Whether a rendered message still holds a character that would let upstream text
+ * stop being a quoted fragment, or hide from the human reading the transcript.
  *
- * `Cc` covers C0, DEL and C1; `Cf` covers every format character — the bidirectional
- * overrides and isolates, the zero-width characters, the interlinear annotations and
- * the U+E0000 tag block — none of which `JSON.stringify` escapes and none of which a
- * human reading the transcript can see. U+2028/U+2029 are `Zl`/`Zp`, so they are
- * named on their own.
+ * Derived from the shared rule in `src/upstream-text.ts` rather than restated: a
+ * character that rule reduces to nothing is a character no reader can see, and
+ * asking the rule means this suite cannot go on asserting a rule the code has
+ * stopped having. It covers the control and format characters the old blacklist
+ * named, and equally the marks, surrogates, blank-rendering letters and unassigned
+ * code points it did not. `test` keeps the shape its call sites already use.
  */
-const STRUCTURE = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+const STRUCTURE = {
+  test: (value: string): boolean =>
+    [...value].some(
+      (char) => char !== " " && neutraliseUpstreamText(char) === "",
+    ),
+};
 
 /** Every code point Unicode assigns to the format category. */
 const CF_CHARS: string[] = [];

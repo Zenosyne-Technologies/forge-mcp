@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ForgeError } from "../errors.js";
+import { boundToLength, neutraliseUpstreamText } from "../upstream-text.js";
 
 /**
  * The parts every read tool shares: argument validation, cursor pagination, and the
@@ -16,8 +17,13 @@ import { ForgeError } from "../errors.js";
  *    each through a coercer. An attribute Forge adds later — `system_prompt`,
  *    `note`, anything — is dropped because nothing copies it, not because something
  *    filters it out.
- * 2. Every scalar is bounded. A name is a name, not the 40KB of prose a compromised
- *    account could put in one, replayed into context on every later call.
+ * 2. Every scalar is bounded, and neutralised. A name is a name, not the 40KB of
+ *    prose a compromised account could put in one, replayed into context on every
+ *    later call — and not a line of characters no human reading the transcript can
+ *    see. What counts as visible is `src/upstream-text.ts`'s decision, the same one
+ *    the failure path in `src/errors.ts` applies: this is the far larger surface of
+ *    the two (tens of thousands of characters on an ordinary listing against two
+ *    hundred on an error), so it is the one that must not be the unhardened half.
  * 3. The whole result is bounded too. Per-field caps bound one value and say nothing
  *    about a hundred rows of them, so `MAX_RESULT_CHARS` bounds what one call can
  *    spend, and the rows it holds back are reported rather than dropped in silence.
@@ -389,11 +395,22 @@ export function items(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-/** A bounded string, or null. Anything non-string becomes null, not "[object Object]". */
+/**
+ * A neutralised, bounded string, or null. Anything non-string becomes null, not
+ * "[object Object]".
+ *
+ * Every upstream string a tool returns passes through here — that is what makes one
+ * coercer enough to cover the whole success path, and it is why the neutralisation
+ * belongs here rather than in each projection. The order is: make it visible, then
+ * bound what is left. Bounding first would count characters that are about to be
+ * removed, and `boundToLength` rather than `slice` because a cut through the middle
+ * of an emoji leaves a lone surrogate — re-introducing, at the last step, exactly
+ * the kind of character the first step exists to remove.
+ */
 export function text(value: unknown, max = MAX_TEXT): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, max) : null;
+  const visible = neutraliseUpstreamText(value);
+  return visible ? boundToLength(visible, max) : null;
 }
 
 /** A bounded URL-ish string. */
