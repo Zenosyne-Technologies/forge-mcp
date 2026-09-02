@@ -20,3 +20,4 @@ updated: 2026-09-02
 | item | sources | what it covers | status | updated |
 |---|---|---|---|---|
 | [configuration](configuration.md) | `src/org.ts`, `src/client.ts` | The environment variables forge-mcp reads, what happens with one Forge organization versus several, and what to do about each organization-resolution error message. | active | 2026-09-02 |
+| [error-messages](error-messages.md) | `src/errors.ts` | What a failed tool call's message means when it quotes Forge's own words — the "Forge reported this text..." label, why it appears, and why a secret you set never shows up as itself. | active | 2026-09-02 |
