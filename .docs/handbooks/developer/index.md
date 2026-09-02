@@ -20,3 +20,4 @@ updated: 2026-09-02
 | item | sources | what it covers | status | updated |
 |---|---|---|---|---|
 | [organization-resolution](organization-resolution.md) | `src/org.ts`, `src/client.ts` | How OrganizationResolver supplies the organization segment every Forge API path needs — lazily, cached as a verdict rather than a message, with FORGE_ORG as a discovery-skipping override — and the request timeout that protects it. | active | 2026-09-02 |
+| [error-rendering](error-rendering.md) | `src/errors.ts`, `src/client.ts`, `src/index.ts` | How describeHttpFailure and quoteUpstream turn a Forge HTTP failure into text safe to hand an agent — the upstream token stripped, control and format characters removed, the fragment bounded to 200 characters and labelled as reported data, before the whole message is JSON-quoted onto the tool result. | active | 2026-09-02 |
