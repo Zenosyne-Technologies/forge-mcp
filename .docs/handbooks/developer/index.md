@@ -19,3 +19,4 @@ updated: 2026-09-02
 
 | item | sources | what it covers | status | updated |
 |---|---|---|---|---|
+| [organization-resolution](organization-resolution.md) | `src/org.ts`, `src/client.ts` | How OrganizationResolver supplies the organization segment every Forge API path needs — lazily, cached as a verdict rather than a message, with FORGE_ORG as a discovery-skipping override — and the request timeout that protects it. | active | 2026-09-02 |

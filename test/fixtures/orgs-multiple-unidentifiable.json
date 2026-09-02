@@ -1,0 +1,6 @@
+{
+  "data": [
+    { "type": "organization", "attributes": { "name": "Zenosyne Ltd." } },
+    { "type": "organization", "attributes": { "name": "Example Agency" } }
+  ]
+}

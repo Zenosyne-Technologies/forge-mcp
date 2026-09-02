@@ -115,6 +115,13 @@ surfaces against the real API early.
 4. **Release** — README, usage documentation, npm publish. Done when a clean machine can install
    and connect using the published package and a token alone.
 
+**Result (issue #6):** the lazy organization resolution piece of stage 1 is built and validated —
+`OrganizationResolver` (`src/org.ts`) plus the 30-second request timeout (`REQUEST_TIMEOUT_MS` in
+`src/client.ts`). Behavior is documented in `.docs/handbooks/developer/organization-resolution.md`
+and `.docs/handbooks/admin/configuration.md`. The rest of stage 1 — `package.json`, `tsconfig`,
+build, stdio wiring, and the three read tools — remains open; `src/tools/index.ts` is still an
+empty registry.
+
 ## Testing
 
 Vitest, with `fetch` mocked against fixtures captured read-only from the live API. One opt-in

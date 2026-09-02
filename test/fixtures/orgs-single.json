@@ -1,0 +1,9 @@
+{
+  "data": [
+    {
+      "id": "org-1",
+      "type": "organization",
+      "attributes": { "name": "Zenosyne Ltd.", "slug": "zenosyne-ltd" }
+    }
+  ]
+}
