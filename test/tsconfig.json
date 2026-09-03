@@ -1,0 +1,11 @@
+{
+  "//": "The root tsconfig compiles src/ only, so until this existed nothing typechecked the harness — a test file could import a symbol that no longer exists and stay green, because Vitest transpiles without typechecking and an unused undefined import throws nothing. That is exactly what happened to `realFetch`. `npm run typecheck` runs both.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["./**/*.ts", "../src/**/*.ts"]
+}

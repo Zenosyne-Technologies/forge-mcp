@@ -164,6 +164,25 @@ Documented in `.docs/handbooks/developer/error-rendering.md`,
 timeout correction) `.docs/handbooks/admin/configuration.md` and
 `.docs/handbooks/developer/organization-resolution.md`.
 
+**Result (issue #8), closing stage 1:** the suite's guarantees are now enforced rather than
+asserted — 206 tests grew to 419 passing plus 4 visibly skipped. A network guard installed at
+module scope (`test/support/setup.ts`, `test/support/network-guard.ts`) fails any test whose code
+reaches `globalThis.fetch` unguarded, including through a `ForgeClient` built with no
+`fetchImpl`; a socket-level check confirms the whole suite makes zero connections. Two
+independent write locks now back the "no test performs a write" guarantee: `fakeFetch` refuses
+any non-GET at the injection seam, and a ledger wrapped around `ForgeClient.prototype.request`
+(`test/support/client-ledger.ts`) catches a write served by any hand-rolled `fetchImpl`, both
+re-asserted after every test. `error-mapping.test.ts` now reads `describeHttpFailure` back out of
+`src/errors.ts` and fails on any status branch without an owning test. A credential scan walks
+every file under `test/` at any depth for token shapes and query-string secrets — the sharp case
+being a Forge deploy-trigger URL, an unauthenticated write trigger that must never be committed.
+The opt-in integration smoke test (`FORGE_MCP_INTEGRATION=1`) is read-only by three independent
+mechanisms. `test/tsconfig.json` typechecks `test/` for the first time, which had left a dead
+import of a removed symbol alive and green. The threat model is stated deliberately narrow: these
+guards catch an honest mistake, not a determined test author who opens a socket directly.
+Documented in `.docs/handbooks/developer/testing-strategy.md`; the mechanical reference lives in
+`test/README.md`. Stage 1 is complete.
+
 ## Testing
 
 Vitest, with `fetch` mocked against fixtures captured read-only from the live API. One opt-in
