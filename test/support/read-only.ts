@@ -11,6 +11,12 @@
  * integration test will do is type its name. That is the moment this catches it.
  */
 
+import {
+  GET,
+  describeRequestTarget,
+  resolveRequestMethod,
+} from "./http-method.js";
+
 /** The environment flag that turns the integration smoke test on. */
 export const INTEGRATION_FLAG = "FORGE_MCP_INTEGRATION";
 
@@ -67,12 +73,18 @@ export class ReadOnlyViolation extends Error {
  * the smoke test is deleted: a request that is not a GET never reaches the socket, so
  * no combination of tool wiring, argument or upstream redirect can deploy, reboot or
  * rewrite anything on the account whose token is in the environment.
+ *
+ * The method is resolved by `resolveRequestMethod`, shared with the fake seam and the
+ * network guard, because the method can arrive on the `Request` instead of in `init` —
+ * and a version of this that read `init` alone let `fetch(new Request(url, { method:
+ * "POST" }))` straight through to the socket, which is the exact request this function
+ * exists to stop.
  */
 export function readOnlyTransport(underlying: typeof fetch): typeof fetch {
   return (async (input: unknown, init?: RequestInit) => {
-    const method = init?.method ?? "GET";
-    if (method !== "GET") {
-      throw new ReadOnlyViolation(method, String(input));
+    const method = resolveRequestMethod(input, init);
+    if (method !== GET) {
+      throw new ReadOnlyViolation(method, describeRequestTarget(input));
     }
     return (underlying as (i: unknown, r?: RequestInit) => Promise<Response>)(
       input,

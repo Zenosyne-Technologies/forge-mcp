@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ForgeClient } from "../src/client.js";
 import { OrganizationResolver } from "../src/org.js";
 import { tools, type ToolContext } from "../src/tools/index.js";
-import { realFetch } from "./support/network-guard.js";
+import { claimRealFetch } from "./support/network-guard.js";
 import {
   INTEGRATION_FLAG,
   PLANNED_MUTATING_TOOLS,
@@ -57,9 +57,10 @@ function liveContext(): ToolContext {
   const client = new ForgeClient({
     token: process.env["FORGE_API_KEY"] ?? "",
     // The global `fetch` is the suite-wide refusal installed by
-    // `test/support/setup.ts`. This is the one place entitled to the real one, and it
-    // only ever gets it wrapped in the read-only transport.
-    fetchImpl: readOnlyTransport(realFetch),
+    // `test/support/setup.ts`. This is the one place entitled to the real one —
+    // `claimRealFetch()` refuses any other caller by name — and it only ever gets it
+    // wrapped in the read-only transport.
+    fetchImpl: readOnlyTransport(claimRealFetch()),
   });
   return {
     client,
@@ -120,13 +121,69 @@ describe("integration smoke — the read-only guarantees", () => {
   });
 
   it("refuses every method but GET at the transport, before anything leaves", async () => {
-    const transport = readOnlyTransport(realFetch);
+    const transport = readOnlyTransport(claimRealFetch());
 
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       await expect(
         transport("https://forge.laravel.com/api/orgs", { method }),
       ).rejects.toBeInstanceOf(ReadOnlyViolation);
     }
+  });
+
+  /**
+   * The shape that got through: a method carried on the `Request` rather than in
+   * `init`. The transport read `init.method`, saw nothing, called it a GET and handed
+   * the request to the real `fetch` — which sent a POST to a live account.
+   *
+   * The underlying fetch here counts its own calls, so this asserts the refusal AND
+   * that nothing reached the thing being wrapped. A version that threw after calling
+   * through would still be a request on the wire.
+   */
+  it("refuses a method carried on a Request object, not merely one passed in init", async () => {
+    let reached = 0;
+    const underlying = (async () => {
+      reached += 1;
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const transport = readOnlyTransport(underlying);
+
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "post"]) {
+      await expect(
+        transport(
+          new Request("https://forge.laravel.com/api/orgs/x/servers/1", {
+            method,
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ReadOnlyViolation);
+    }
+
+    expect(
+      reached,
+      "A non-GET reached the fetch the read-only transport wraps. On a live run that is a write against real infrastructure.",
+    ).toBe(0);
+
+    // The GET still passes through, so the refusal is about the method and not about
+    // `Request` objects in general.
+    await expect(
+      transport(new Request("https://forge.laravel.com/api/orgs")),
+    ).resolves.toBeInstanceOf(Response);
+    expect(reached).toBe(1);
+  });
+
+  it("refuses a POST in init even when the Request it overrides is a GET", async () => {
+    let reached = 0;
+    const underlying = (async () => {
+      reached += 1;
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const transport = readOnlyTransport(underlying);
+
+    await expect(
+      transport(new Request("https://forge.laravel.com/api/orgs"), {
+        method: "POST",
+      }),
+    ).rejects.toBeInstanceOf(ReadOnlyViolation);
+    expect(reached).toBe(0);
   });
 
   it("requires a token in the environment when the flag is on", () => {
@@ -241,13 +298,30 @@ describe(`integration smoke — live Forge, read-only (set ${INTEGRATION_FLAG}=1
     "never renders the credential into a result or an error",
     async () => {
       const token = process.env["FORGE_API_KEY"] ?? "";
+      expect(token.length).toBeGreaterThan(0);
+
+      let completed = false;
       const rendered = await call("list_servers", { page_size: 1 }).then(
-        (result) => JSON.stringify(result),
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        (result) => {
+          completed = true;
+          return JSON.stringify(result);
+        },
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
       );
 
-      expect(token.length).toBeGreaterThan(0);
+      // Checked on both paths first: a credential echoed into a FAILURE message is the
+      // leak most likely to happen, so the failure path is scanned rather than skipped.
       expect(rendered.includes(token)).toBe(false);
+
+      // …and then the test refuses to pass on the failure path. With every live call
+      // failing — no route out, a revoked token, an API that moved — this used to be
+      // green while its subject rendered nothing at all: a leak check that passes
+      // because nothing was checked is worse than no leak check, because it is counted.
+      expect(
+        completed,
+        `list_servers did not complete, so no tool result was rendered and this check inspected nothing. The call failed with: ${rendered}`,
+      ).toBe(true);
     },
     LIVE_TIMEOUT_MS,
   );

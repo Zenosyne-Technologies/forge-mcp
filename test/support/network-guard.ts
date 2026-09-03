@@ -13,16 +13,48 @@
  * test that leaked, the method and the target. A test that reaches the network fails
  * loudly at the moment it reaches, rather than passing quietly against production.
  *
- * `realFetch` is captured before the swap and exported for the ONE caller entitled to
- * it — `test/integration.smoke.test.ts`, which is opt-in behind an environment flag
- * and wraps it in a read-only guard of its own. Nothing lifts the guard globally:
- * there is no uninstall, because a suite that can restore real `fetch` mid-run is a
- * suite whose isolation depends on nobody calling the restore.
+ * The swap is armed at MODULE scope in `test/support/setup.ts`, which Vitest runs
+ * before the test file is imported — so a `beforeAll`, or a `ForgeClient` built at
+ * module scope (which captures `globalThis.fetch` at construction and keeps it), is
+ * covered too. Arming it in `beforeEach` alone left both of those running against the
+ * real `fetch`, and a client that captured it there leaked from inside ordinary tests
+ * for the rest of the file.
+ *
+ * The real `fetch` is captured before the swap and is NOT exported. It is handed out
+ * by `claimRealFetch()`, which serves exactly one caller —
+ * `test/integration.smoke.test.ts`, opt-in behind an environment flag and wrapping it
+ * in a read-only transport of its own — refuses everyone else by name, and records
+ * every claim so that use of it is visible rather than assumed. Nothing lifts the
+ * guard globally: there is no uninstall, because a suite that can restore real `fetch`
+ * mid-run is a suite whose isolation depends on nobody calling the restore.
  */
 import { expect } from "vitest";
 
-/** The platform `fetch`, captured before the guard replaces it. */
-export const realFetch: typeof fetch = globalThis.fetch;
+import { describeRequestTarget, resolveRequestMethod } from "./http-method.js";
+
+/**
+ * The platform `fetch`, captured before the guard replaces it.
+ *
+ * Module-private on purpose. Exported, it was a handle on the real network that every
+ * file in the suite could import with nothing to stop it and nothing to notice it.
+ */
+const realFetch: typeof fetch = globalThis.fetch;
+
+/**
+ * The one file entitled to the real `fetch`.
+ *
+ * Matched against the call stack rather than passed in as a password: a caller cannot
+ * claim to be the smoke test without actually being called from it, and nobody can
+ * grant themselves the entitlement by copying a constant.
+ */
+export const ENTITLED_REAL_FETCH_CALLER = "integration.smoke.test";
+
+const claims: string[] = [];
+
+/** Every claim on the real `fetch` since the process started, newest last. */
+export function realFetchClaims(): readonly string[] {
+  return claims;
+}
 
 /** Thrown when a test reaches for the network instead of injecting a fake. */
 export class NetworkAccessError extends Error {
@@ -30,6 +62,33 @@ export class NetworkAccessError extends Error {
     super(message);
     this.name = "NetworkAccessError";
   }
+}
+
+/**
+ * Hand the real `fetch` to the one suite allowed to hold it.
+ *
+ * Every other caller gets a `NetworkAccessError` naming what it should have used, so
+ * "only the integration smoke test may reach the network" is enforced at the moment of
+ * the reach rather than written in a comment above an export everyone can import.
+ */
+export function claimRealFetch(): typeof fetch {
+  const stack = new Error("claim").stack ?? "";
+  const caller = stack.split("\n").slice(2).join("\n");
+
+  if (!caller.includes(ENTITLED_REAL_FETCH_CALLER)) {
+    throw new NetworkAccessError(
+      [
+        `Refused a claim on the real fetch from outside`,
+        `test/${ENTITLED_REAL_FETCH_CALLER}.ts.`,
+        `It is the only suite entitled to it: it is opt-in behind`,
+        `FORGE_MCP_INTEGRATION=1 and wraps what it gets in readOnlyTransport().`,
+        `Build a stub with fakeFetch() from test/support/fake-fetch.ts instead.`,
+      ].join(" "),
+    );
+  }
+
+  claims.push(expect.getState().currentTestName ?? "<outside any test>");
+  return realFetch;
 }
 
 /**
@@ -51,7 +110,12 @@ export function networkRefusalMessage(method: string, target: string): string {
 
 const guardedFetch = (async (input: unknown, init?: RequestInit) => {
   throw new NetworkAccessError(
-    networkRefusalMessage(init?.method ?? "GET", describeTarget(input)),
+    // The same shared resolution the fake seam and the read-only transport use, so a
+    // POST carried on a `Request` is reported as a POST here too.
+    networkRefusalMessage(
+      resolveRequestMethod(input, init),
+      describeRequestTarget(input),
+    ),
   );
 }) as unknown as typeof fetch;
 
@@ -70,11 +134,4 @@ export function installNetworkGuard(): void {
  */
 export function networkGuardInstalled(): boolean {
   return globalThis.fetch === guardedFetch;
-}
-
-function describeTarget(input: unknown): string {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.href;
-  if (input instanceof Request) return input.url;
-  return String(input);
 }

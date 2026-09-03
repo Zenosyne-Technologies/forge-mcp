@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+import { describeRequestTarget, resolveRequestMethod } from "./http-method.js";
+
 /**
  * Test seam for the Forge API: `ForgeClient` takes an injectable `fetchImpl`, so a
  * test never touches the network and never needs a real token.
@@ -74,6 +76,28 @@ export function servedCalls(): readonly RecordedCall[] {
   return served;
 }
 
+/**
+ * Record an attempt made by something that is not a `fakeFetch`.
+ *
+ * The ledger is the harness's account of what the suite asked for and what it got, and
+ * it is only as complete as the paths that write to it. `fakeFetch` is not the only
+ * way a request is issued: a suite can hand `ForgeClient` a fetch it wrote by hand
+ * (`test/org.test.ts` does, legitimately, to inspect the abort signal), and such a
+ * stub answers whatever it likes without this file ever seeing it.
+ *
+ * So `test/support/setup.ts` wraps `ForgeClient.prototype.request` and reports through
+ * here, which puts every request issued through the client — whatever fetch is behind
+ * it — under the same after-each check.
+ */
+export function recordAttempt(call: RecordedCall): void {
+  attempted.push(call);
+}
+
+/** Record that such a request was ANSWERED. See `servedCalls()` for why it matters. */
+export function recordServed(call: RecordedCall): void {
+  served.push(call);
+}
+
 /** Called between tests by `test/support/setup.ts`. */
 export function resetCallLedger(): void {
   attempted.length = 0;
@@ -105,9 +129,12 @@ export function fakeFetch(
   const calls: RecordedCall[] = [];
 
   const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+    // Resolved by the shared rule, not by reading `init`: a `Request` carries its own
+    // method, and a fake that reported `fetch(new Request(url, { method: "POST" }))`
+    // as a GET would both serve the write and record it as a read.
     const call: RecordedCall = {
-      url: String(input),
-      method: init?.method ?? "GET",
+      url: describeRequestTarget(input),
+      method: resolveRequestMethod(input, init),
     };
     calls.push(call);
     attempted.push(call);

@@ -20,11 +20,12 @@ import { fakeFetch } from "./support/fake-fetch.js";
  * names the status it belongs to.
  *
  * The registry below is the coverage, and the last suite in this file makes it
- * binding: it reads `src/errors.ts`, extracts every `case` label the switch actually
- * has, and asserts that set is exactly the set of statuses declared here. A sixth
- * `case` added without a row fails; a row left behind after a `case` is deleted fails
- * too. Nobody can add a status branch and forget the test, because forgetting the
- * test is itself a failing test.
+ * binding: it reads `src/errors.ts`, extracts every status the function dispatches on
+ * — numeric `case` labels, labels written as named constants, and `status === <n>`
+ * guards anywhere in the body — and asserts that set is exactly the set declared here.
+ * A sixth branch added without a row fails; a row left behind after a branch is
+ * deleted fails too; and a branch the scan cannot resolve to a number fails rather
+ * than being passed over, so the check cannot quietly stop being coverage.
  */
 
 /** Obviously fake. A real Forge credential never enters this repository. */
@@ -228,9 +229,26 @@ describe.each(CASES)("describeHttpFailure — %s", (_name, branch) => {
 /**
  * The registry above is only coverage while it matches the code.
  *
- * `describeHttpFailure` is a switch, and a switch is the one shape where adding a
- * behaviour is a one-line diff that no existing assertion touches. So the switch is
- * read back out of the source and compared against what this file claims to cover.
+ * `describeHttpFailure` maps a status to a message, and that mapping is the one shape
+ * where adding a behaviour is a small diff that no existing assertion touches. So the
+ * mapping is read back out of the source and compared against what this file claims to
+ * cover.
+ *
+ * WHAT THE SCAN READS, exactly — a forcing function is worth only what it can see, and
+ * this one used to see `case <number>:` inside the `switch` and nothing else. Two
+ * perfectly ordinary ways of adding a status walked past it: a guard placed before the
+ * switch (`if (status === 409) return …`) and a case label written as a named constant
+ * (`case HTTP_CONFLICT:`). Both now count, across the WHOLE function body:
+ *
+ *   - `case <number>:`
+ *   - `case <IDENT>:` where IDENT is a module-level numeric constant, resolved to its
+ *     value out of the same source
+ *   - `status === <number>` / `<number> === status`, and the `!==` forms
+ *   - `status === <IDENT>` for the same resolvable constants
+ *
+ * And a label it CANNOT resolve is reported rather than skipped, so the failure mode is
+ * "this check no longer understands the code" — a red test asking to be updated —
+ * rather than a silent gap that reads like coverage.
  */
 describe("every branch describeHttpFailure has is owned by a test above", () => {
   const source = readFileSync(
@@ -238,46 +256,193 @@ describe("every branch describeHttpFailure has is owned by a test above", () => 
     "utf8",
   );
 
-  /** The body of the one `switch (status)` inside `describeHttpFailure`. */
-  const switchBody = (() => {
-    const fn = source.indexOf("export function describeHttpFailure");
-    expect(
-      fn,
-      "describeHttpFailure is no longer declared as an exported function in src/errors.ts — this check needs updating before it can be trusted.",
-    ).toBeGreaterThan(-1);
+  interface BranchScan {
+    /** Every status the function dispatches on, however it was written. */
+    statuses: number[];
+    /** Case labels and comparisons this scan could not resolve to a number. */
+    unresolved: string[];
+    /** Whether an unnamed status still has somewhere to land. */
+    hasDefault: boolean;
+  }
 
-    const opened = source.indexOf("switch (status)", fn);
-    expect(
-      opened,
-      "describeHttpFailure no longer maps status to message with a `switch (status)`. Whatever replaced it still needs one owning test per branch — rewrite this check against the new shape rather than deleting it.",
-    ).toBeGreaterThan(-1);
+  /**
+   * The body of a top-level exported function, from its declaration to the first
+   * closing brace in column zero.
+   */
+  function functionBody(text: string, name: string): string {
+    const start = text.indexOf(`export function ${name}`);
+    if (start === -1) {
+      throw new Error(
+        `${name} is no longer declared as an exported function in src/errors.ts — this check needs updating before it can be trusted.`,
+      );
+    }
+    const end = text.indexOf("\n}", start);
+    if (end === -1) {
+      throw new Error(`${name} has no closing brace in column zero.`);
+    }
+    return text.slice(start, end);
+  }
 
-    // The function ends at the first closing brace in column zero after it starts.
-    const end = source.indexOf("\n}", opened);
-    return source.slice(opened, end);
-  })();
+  /** Module-level `const NAME = <number>` declarations, so a named label resolves. */
+  function numericConstants(text: string): Map<string, number> {
+    const found = new Map<string, number>();
+    for (const match of text.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(\d[\d_]*)\s*;/g,
+    )) {
+      found.set(match[1] as string, Number((match[2] as string).replace(/_/g, "")));
+    }
+    return found;
+  }
+
+  function statusBranchesIn(text: string, name: string): BranchScan {
+    const body = functionBody(text, name);
+    const constants = numericConstants(text);
+    const statuses = new Set<number>();
+    const unresolved: string[] = [];
+
+    const resolve = (label: string): void => {
+      const trimmed = label.trim();
+      if (/^\d+$/.test(trimmed)) {
+        statuses.add(Number(trimmed));
+        return;
+      }
+      const named = constants.get(trimmed);
+      if (named !== undefined) {
+        statuses.add(named);
+        return;
+      }
+      unresolved.push(trimmed);
+    };
+
+    for (const match of body.matchAll(/\bcase\s+([^:\n]+):/g)) {
+      resolve(match[1] as string);
+    }
+    for (const match of body.matchAll(
+      /\bstatus\s*[=!]==?\s*([A-Za-z_$\d][\w$]*)/g,
+    )) {
+      resolve(match[1] as string);
+    }
+    for (const match of body.matchAll(
+      /([A-Za-z_$\d][\w$]*)\s*[=!]==?\s*status\b/g,
+    )) {
+      resolve(match[1] as string);
+    }
+
+    return {
+      statuses: [...statuses].sort((a, b) => a - b),
+      unresolved,
+      hasDefault: /\n\s*default:/.test(body),
+    };
+  }
+
+  const scan = statusBranchesIn(source, "describeHttpFailure");
 
   const declared = BRANCHES.flatMap((branch) =>
     branch.label === null ? [] : [branch.label],
   ).sort((a, b) => a - b);
 
-  const inSource = [...switchBody.matchAll(/\bcase (\d+):/g)]
-    .map((match) => Number(match[1]))
-    .sort((a, b) => a - b);
-
-  it("has a test for exactly the statuses the switch names, and no others", () => {
+  it("has a test for exactly the statuses the code dispatches on, and no others", () => {
     expect(
-      inSource,
+      scan.statuses,
       "The status branches in src/errors.ts and the BRANCHES registry in this file have diverged. Add or remove the row that matches, so every status keeps an owning test.",
     ).toEqual(declared);
   });
 
-  it("still has a default branch, and a row that owns it", () => {
-    expect(/\n\s*default:/.test(switchBody)).toBe(true);
+  it("understood every branch it read, rather than passing over one", () => {
+    expect(
+      scan.unresolved,
+      "This check found a status branch in src/errors.ts it could not resolve to a number. Until it can, it is not coverage — teach it the new shape, or make the branch readable to it.",
+    ).toEqual([]);
+  });
+
+  it("still routes a status it does not name to a default branch, and a row owns it", () => {
+    expect(
+      scan.hasDefault,
+      "describeHttpFailure no longer has a `default:` branch. An unnamed status must still produce a message, and a row here must own it.",
+    ).toBe(true);
     expect(BRANCHES.filter((branch) => branch.label === null)).toHaveLength(1);
   });
 
   it("declares no status twice", () => {
     expect(new Set(declared).size).toBe(declared.length);
+  });
+
+  /**
+   * The scan, tested on shapes `src/errors.ts` does not currently have.
+   *
+   * Both of these passed the previous check by being invisible to it, so they are the
+   * cases worth pinning: a status handled before the switch, and one labelled with a
+   * constant.
+   */
+  describe("the scan itself sees the shapes that used to slip past it", () => {
+    const SWITCH_ONLY = [
+      "export function describeHttpFailure(status: number): string {",
+      "  switch (status) {",
+      "    case 401:",
+      '      return "a";',
+      "    default:",
+      '      return "b";',
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+
+    it("reads a plain numeric case label", () => {
+      expect(statusBranchesIn(SWITCH_ONLY, "describeHttpFailure")).toMatchObject(
+        { statuses: [401], unresolved: [], hasDefault: true },
+      );
+    });
+
+    it("reads a status handled by an `if` before the switch ever runs", () => {
+      const withGuard = SWITCH_ONLY.replace(
+        "  switch (status) {",
+        ['  if (status === 409) return "conflict";', "  switch (status) {"].join(
+          "\n",
+        ),
+      );
+
+      expect(
+        statusBranchesIn(withGuard, "describeHttpFailure").statuses,
+      ).toEqual([401, 409]);
+    });
+
+    it("reads a case label written as a named constant, by resolving it", () => {
+      const withConstant = `const HTTP_LOCKED = 423;\n${SWITCH_ONLY.replace(
+        "    case 401:",
+        "    case HTTP_LOCKED:",
+      )}`;
+
+      expect(
+        statusBranchesIn(withConstant, "describeHttpFailure").statuses,
+      ).toEqual([423]);
+    });
+
+    it("reports a label it cannot resolve instead of ignoring it", () => {
+      const opaque = SWITCH_ONLY.replace(
+        "    case 401:",
+        "    case SOMETHING_ELSE:",
+      );
+      const result = statusBranchesIn(opaque, "describeHttpFailure");
+
+      expect(result.unresolved).toEqual(["SOMETHING_ELSE"]);
+      expect(result.statuses).toEqual([]);
+    });
+
+    it("notices a function that stopped having a default branch", () => {
+      const noDefault = SWITCH_ONLY.replace(
+        ["    default:", '      return "b";'].join("\n"),
+        "",
+      );
+
+      expect(statusBranchesIn(noDefault, "describeHttpFailure").hasDefault).toBe(
+        false,
+      );
+    });
+
+    it("fails loudly when the function it reads is gone", () => {
+      expect(() =>
+        statusBranchesIn("export const nothing = 1;\n", "describeHttpFailure"),
+      ).toThrow(/no longer declared/);
+    });
   });
 });
