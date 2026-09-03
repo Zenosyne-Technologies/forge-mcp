@@ -21,16 +21,18 @@
  * for the rest of the file.
  *
  * The real `fetch` is captured before the swap and is NOT exported. It is handed out
- * by `claimRealFetch()`, which serves exactly one caller —
- * `test/integration.smoke.test.ts`, opt-in behind an environment flag and wrapping it
- * in a read-only transport of its own — refuses everyone else by name, and records
- * every claim so that use of it is visible rather than assumed. Nothing lifts the
- * guard globally: there is no uninstall, because a suite that can restore real `fetch`
- * mid-run is a suite whose isolation depends on nobody calling the restore.
+ * by `claimRealFetch()`, which serves one caller — `test/integration.smoke.test.ts`,
+ * which wraps it in a read-only transport of its own — and only on a run that asked
+ * for it with `FORGE_MCP_INTEGRATION=1`. Everyone else is refused by name, and every
+ * claim that succeeds is recorded so that use of it is visible rather than assumed.
+ * Nothing lifts the guard globally: there is no uninstall, because a suite that can
+ * restore real `fetch` mid-run is a suite whose isolation depends on nobody calling
+ * the restore.
  */
 import { expect } from "vitest";
 
 import { describeRequestTarget, resolveRequestMethod } from "./http-method.js";
+import { INTEGRATION_FLAG, integrationEnabled } from "./read-only.js";
 
 /**
  * The platform `fetch`, captured before the guard replaces it.
@@ -65,10 +67,14 @@ export class NetworkAccessError extends Error {
 }
 
 /**
- * Hand the real `fetch` to the one suite allowed to hold it.
+ * Hand the real `fetch` to the one suite allowed to hold it, on the runs that asked
+ * for the network.
  *
- * Every other caller gets a `NetworkAccessError` naming what it should have used, so
- * "only the integration smoke test may reach the network" is enforced at the moment of
+ * Two conditions, both required. The caller's stack must name the entitled file, and
+ * the integration flag must be set — so an ordinary `npm test` cannot obtain a live
+ * network handle at all, no matter which file asks. Every other caller gets a
+ * `NetworkAccessError` naming what it should have used, so "only the integration
+ * smoke test may reach the network, and only when asked" is enforced at the moment of
  * the reach rather than written in a comment above an export everyone can import.
  */
 export function claimRealFetch(): typeof fetch {
@@ -81,7 +87,26 @@ export function claimRealFetch(): typeof fetch {
         `Refused a claim on the real fetch from outside`,
         `test/${ENTITLED_REAL_FETCH_CALLER}.ts.`,
         `It is the only suite entitled to it: it is opt-in behind`,
-        `FORGE_MCP_INTEGRATION=1 and wraps what it gets in readOnlyTransport().`,
+        `${INTEGRATION_FLAG}=1 and wraps what it gets in readOnlyTransport().`,
+        `Build a stub with fakeFetch() from test/support/fake-fetch.ts instead.`,
+      ].join(" "),
+    );
+  }
+
+  // The entitlement is about WHICH file may hold the real `fetch`; the flag is about
+  // WHETHER anything may hold it on this run. Without this second check the entitled
+  // file was handed a live network handle on every `npm test`, flag or no flag, and
+  // the only thing standing between that handle and an unauthenticated request to
+  // somebody's production Forge was that the tests using it happened to send methods
+  // the read-only transport refuses. A contributor adding the obvious "and a GET
+  // passes through" case would have removed that accident.
+  if (!integrationEnabled()) {
+    throw new NetworkAccessError(
+      [
+        `Refused a claim on the real fetch: ${INTEGRATION_FLAG} is not set.`,
+        `The real fetch is handed out only on an opt-in integration run`,
+        `(${INTEGRATION_FLAG}=1 npm run test:integration), so an ordinary`,
+        `npm test never holds a handle on the network at all.`,
         `Build a stub with fakeFetch() from test/support/fake-fetch.ts instead.`,
       ].join(" "),
     );

@@ -663,6 +663,51 @@ describe("no fixture carries a credential", () => {
   }
 
   /**
+   * One file's verdict: whether it is clean, and what to say if it is not.
+   *
+   * The per-file checks below assert on `clean` — a boolean — rather than on the list
+   * of matches, and that is the whole point of this type. `expect(matches).toEqual([])`
+   * reads better, but it hands the MATCHED SECRET to vitest as the received value,
+   * which renders it into the terminal, the CI log, and wherever that log is shipped
+   * or retained. The precondition of a failure here is a secret already committed
+   * under `test/`; a scan that responds by copying it into a build log turns one
+   * disclosure into several, and into ones that outlive the working tree.
+   *
+   * So the failure names the file and the SHAPE that matched — the length, the
+   * character class, the parameter name — and never the value. That is everything a
+   * contributor needs in order to open the file and see it; the value is in the file.
+   * `FORGE_API_KEY` check further down already got this right, which is where the
+   * pattern comes from.
+   */
+  type ScanVerdict = { clean: boolean; failure: string };
+
+  /** The query-secret rule's verdict for one file, with no value in the message. */
+  function querySecretVerdict(file: { name: string; text: string }): ScanVerdict {
+    const allowed = new Set(ALLOWED_QUERY_SECRETS.map((row) => row.value));
+    const offenders = [...file.text.matchAll(QUERY_SECRET)].filter(
+      (match) => !allowed.has(match[1] as string),
+    );
+    const shapes = offenders
+      .map((match) => {
+        const parameter = match[0].slice(1).split("=")[0] ?? "";
+        const length = (match[1] as string).length;
+        return `${parameter}=<${length} characters>`;
+      })
+      .join(", ");
+
+    return {
+      clean: offenders.length === 0,
+      failure:
+        `${file.name} carries ${offenders.length} query parameter(s) that name a ` +
+        `secret and whose value is not a declared placeholder: ${shapes}. The values ` +
+        `are deliberately not printed — open ${file.name} and look at those ` +
+        `parameters. A Forge deploy_url token is an unauthenticated write trigger: ` +
+        `anyone holding the URL can deploy the site. Replace it with a placeholder ` +
+        `and add the row to ALLOWED_QUERY_SECRETS.`,
+    };
+  }
+
+  /**
    * The shape a Forge API token actually has: a long opaque run of letters and
    * digits.
    *
@@ -684,6 +729,25 @@ describe("no fixture carries a credential", () => {
       text,
     );
     return stripped.match(OPAQUE_TOKEN) ?? [];
+  }
+
+  /** The opaque-run rule's verdict for one file, with no value in the message. */
+  function opaqueRunVerdict(file: { name: string; text: string }): ScanVerdict {
+    const runs = opaqueRunsIn(file.text);
+    const shapes = runs
+      .map((run) => `${run.length} alphanumeric characters`)
+      .join(", ");
+
+    return {
+      clean: runs.length === 0,
+      failure:
+        `${file.name} contains ${runs.length} long opaque string(s) of the shape a ` +
+        `Forge API token has: ${shapes}. The value is deliberately not printed — ` +
+        `open ${file.name} and look for an unbroken run of that length. If it is ` +
+        `genuinely test data, add it to ALLOWED_LOOKALIKES with the reason; if it is ` +
+        `a credential it must never be committed, and removing it from the tree is ` +
+        `not enough on its own — rotate it.`,
+    };
   }
 
   /**
@@ -737,22 +801,53 @@ describe("no fixture carries a credential", () => {
   it.each(scannedForOpaqueStrings.map((f) => [f.name, f] as const))(
     "%s carries no long opaque string that is not a declared decoy",
     (_name, file) => {
-      expect(
-        opaqueRunsIn(file.text),
-        `${file.name} contains a long opaque string that looks like a Forge API token. If it is genuinely test data, add it to ALLOWED_LOOKALIKES with the reason; if it is a credential, it must never be committed.`,
-      ).toEqual([]);
+      // Boolean, not the match list: see `ScanVerdict`. The received value vitest
+      // renders on failure must not be the secret this check just found.
+      const verdict = opaqueRunVerdict(file);
+      expect(verdict.clean, verdict.failure).toBe(true);
     },
   );
 
   it.each(scanned.map((f) => [f.name, f] as const))(
     "%s carries no secret in a query string",
     (_name, file) => {
-      expect(
-        querySecretsIn(file.text),
-        `${file.name} carries a query parameter that names a secret and whose value is not a declared placeholder. A Forge deploy_url token is an unauthenticated write trigger: anyone holding the URL can deploy the site. Replace it with a placeholder and add the row to ALLOWED_QUERY_SECRETS.`,
-      ).toEqual([]);
+      const verdict = querySecretVerdict(file);
+      expect(verdict.clean, verdict.failure).toBe(true);
     },
   );
+
+  it("reports a caught token by file and shape, and never by value", () => {
+    // Assembled at run time for the reason every other planted value here is: a
+    // literal would be a token in a committed `.ts` file that this suite scans.
+    const secret = "A1b2C3d4".repeat(6);
+    const verdict = opaqueRunVerdict({
+      name: join("fixtures", "planted.json"),
+      text: `{ "captured": "${secret}" }`,
+    });
+
+    expect(verdict.clean).toBe(false);
+    expect(verdict.failure).toContain(join("fixtures", "planted.json"));
+    expect(verdict.failure).toContain("48 alphanumeric characters");
+    expect(verdict.failure).toContain("ALLOWED_LOOKALIKES");
+
+    // The whole point. Asserted as a boolean so that a regression here does not print
+    // the planted value either — a leak check that leaks on failure is the bug.
+    expect(verdict.failure.includes(secret)).toBe(false);
+  });
+
+  it("reports a caught query secret by parameter and length, not by value", () => {
+    const secret = "a1b2c3d4".repeat(4);
+    const verdict = querySecretVerdict({
+      name: join("fixtures", "planted.json"),
+      text: `"deployment_url": "https://forge.laravel.com/x/deploy/http?${"token"}=${secret}"`,
+    });
+
+    expect(verdict.clean).toBe(false);
+    expect(verdict.failure).toContain(join("fixtures", "planted.json"));
+    expect(verdict.failure).toContain(`${"token"}=<32 characters>`);
+    expect(verdict.failure).toContain("ALLOWED_QUERY_SECRETS");
+    expect(verdict.failure.includes(secret)).toBe(false);
+  });
 
   it("catches the deploy trigger a real recording would carry", () => {
     // A real `deployment_url`, with a value the length one actually has — well under

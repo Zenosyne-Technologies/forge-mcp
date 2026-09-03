@@ -163,7 +163,7 @@ check sees; none of them sees more than that.
 | Offline | `harness.test.ts` → "the default suite cannot reach the network" | Calls the real API through `globalThis.fetch` and requires the refusal, including through a `ForgeClient` built with no `fetchImpl` — the mistake that actually happens — and from module scope and `beforeAll`. `fetch` only: `node:http` is a different door. |
 | No writes | `harness.test.ts` → "no test performs a write of any kind" | Attempts POST/PUT/PATCH/DELETE at the seam, on a `Request` object, with a non-string method, and through `ForgeClient`, and requires each to be refused and never served. A write answered by a hand-rolled `fetchImpl` *used through the client* is caught by the ledger; one issued by a stub a test calls directly is not seen at all. |
 | Ledger still installed | `harness.test.ts` → "the client write ledger is checked as the fetch guard is" | The wrapper on `ForgeClient.prototype.request` is compared against the one that was installed, after every test. Catches a `vi.spyOn` or an assignment; a replacement that deliberately forwarded to the original would pass. |
-| Real `fetch` | `harness.test.ts` → "only the integration smoke test can obtain the real fetch" | `claimRealFetch()` reads its own **stack text** and refuses a caller whose stack does not name `integration.smoke.test`, recording every claim. That catches an ordinary import from another suite. It is text, not an identity: a caller determined to forge a stack can, and this does not stop it. |
+| Real `fetch` | `harness.test.ts` → "only the integration smoke test can obtain the real fetch" | `claimRealFetch()` reads its own **stack text** and refuses a caller whose stack does not name `integration.smoke.test`, and refuses every caller unless `FORGE_MCP_INTEGRATION=1`, recording each claim it grants. That catches an ordinary import from another suite, and keeps `npm test` from holding a network handle at all. It is text, not an identity: a caller determined to forge a stack can, and this does not stop it. |
 | No credentials | `harness.test.ts` → "no fixture carries a credential" | See below for exactly what is scanned. |
 | Error branches | `error-mapping.test.ts` | One owning test per status branch of `describeHttpFailure`, plus a check that reads the branches back out of `src/errors.ts`. See below for the shapes it understands. |
 | Read-only integration | `integration.smoke.test.ts` → "the read-only guarantees" | Runs flag or no flag: asserts every tool it calls is `readOnlyHint: true`, scans its own source for mutating tool names, and proves its transport refuses non-GET. |
@@ -240,10 +240,15 @@ exists. `FORGE_ORG` is optional; without it the resolver discovers the organizat
 which is itself worth exercising. The token is read from the environment and from
 nowhere else, and nothing in the file prints it.
 
-It is also the only file `claimRealFetch()` answers: every other caller gets a
-`NetworkAccessError` naming it, and every claim is recorded. It calls `list_servers`,
-`get_server` and `list_sites` and nothing else. Three independent things stop it
-mutating:
+`claimRealFetch()` answers a caller whose stack text contains `integration.smoke.test`
+and only when `FORGE_MCP_INTEGRATION=1` is set; every other claim is refused by name
+and every claim it grants is recorded. That is a filename substring, not this file's
+identity — a sibling Vitest collects whose path carries it is equally entitled — and
+it says nothing about what the caller then does: wrapping the result in
+`readOnlyTransport` is this file's own doing, not something the guard enforces.
+
+It calls `list_servers`, `get_server` and `list_sites` and nothing else. Three
+independent things stop it mutating:
 
 1. Every tool it names is asserted `readOnlyHint: true` and `destructiveHint: false`
    against the live registry.

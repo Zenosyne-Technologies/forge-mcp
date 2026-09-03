@@ -6,7 +6,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ForgeClient } from "../src/client.js";
 import { OrganizationResolver } from "../src/org.js";
 import { tools, type ToolContext } from "../src/tools/index.js";
-import { claimRealFetch } from "./support/network-guard.js";
+import {
+  NetworkAccessError,
+  claimRealFetch,
+} from "./support/network-guard.js";
 import {
   INTEGRATION_FLAG,
   PLANNED_MUTATING_TOOLS,
@@ -53,13 +56,43 @@ const SOURCE = readFileSync(fileURLToPath(import.meta.url), "utf8");
 /** A live account can be slow; this is not a unit test's budget. */
 const LIVE_TIMEOUT_MS = 60_000;
 
+/**
+ * Where the always-run transport tests aim: a closed port on loopback.
+ *
+ * They construct a `readOnlyTransport` on every `npm test`, so the address they carry
+ * is the address a future edit to one of them would send to. Aimed at
+ * `https://forge.laravel.com/api/…`, the only thing keeping them off somebody's
+ * production account was that they happen to send methods the transport refuses —
+ * and the obvious symmetry test ("…and a GET passes through") would have sent one.
+ * Aimed here, against a counting fake, the worst an edit can do is fail locally.
+ */
+const UNROUTABLE = "http://127.0.0.1:1/";
+
+/**
+ * A stand-in for the real `fetch` that counts instead of connecting.
+ *
+ * Every always-run test wraps one of these rather than the real thing, so the
+ * refusals are proven without the suite ever holding a network handle — and the
+ * count proves the refusal happened BEFORE the wrapped fetch was called, which is
+ * the whole claim.
+ */
+function countingFetch(): { fetchImpl: typeof fetch; reached: () => number } {
+  let reached = 0;
+  const fetchImpl = (async () => {
+    reached += 1;
+    return new Response("{}");
+  }) as unknown as typeof fetch;
+  return { fetchImpl, reached: () => reached };
+}
+
 function liveContext(): ToolContext {
   const client = new ForgeClient({
     token: process.env["FORGE_API_KEY"] ?? "",
     // The global `fetch` is the suite-wide refusal installed by
     // `test/support/setup.ts`. This is the one place entitled to the real one —
-    // `claimRealFetch()` refuses any other caller by name — and it only ever gets it
-    // wrapped in the read-only transport.
+    // `claimRealFetch()` refuses any other caller by name, and refuses everyone when
+    // the integration flag is unset — and it only ever gets it wrapped in the
+    // read-only transport.
     fetchImpl: readOnlyTransport(claimRealFetch()),
   });
   return {
@@ -121,13 +154,52 @@ describe("integration smoke — the read-only guarantees", () => {
   });
 
   it("refuses every method but GET at the transport, before anything leaves", async () => {
-    const transport = readOnlyTransport(claimRealFetch());
+    const underlying = countingFetch();
+    const transport = readOnlyTransport(underlying.fetchImpl);
 
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-      await expect(
-        transport("https://forge.laravel.com/api/orgs", { method }),
-      ).rejects.toBeInstanceOf(ReadOnlyViolation);
+      await expect(transport(UNROUTABLE, { method })).rejects.toBeInstanceOf(
+        ReadOnlyViolation,
+      );
     }
+
+    expect(
+      underlying.reached(),
+      "A non-GET reached the fetch the read-only transport wraps.",
+    ).toBe(0);
+  });
+
+  /**
+   * The gate that makes the construction above safe to edit.
+   *
+   * `claimRealFetch()` used to check only WHICH file was asking, so the entitled file
+   * held a live network handle on every `npm test`. Now it also checks whether this
+   * run asked for the network at all, which is why nothing in this always-run block
+   * needs the real `fetch` to prove what it proves.
+   */
+  it(`hands out the real fetch only when ${INTEGRATION_FLAG} is set`, () => {
+    if (ENABLED) {
+      // On an opt-in run the claim succeeds: this is the same handle `liveContext()`
+      // takes, and asking for it issues no request.
+      expect(typeof claimRealFetch()).toBe("function");
+      return;
+    }
+
+    const error = (() => {
+      try {
+        claimRealFetch();
+        return undefined;
+      } catch (thrown: unknown) {
+        return thrown as Error;
+      }
+    })();
+
+    expect(
+      error,
+      "claimRealFetch() handed out the real fetch on a run that did not ask for the network.",
+    ).toBeInstanceOf(NetworkAccessError);
+    expect(error?.message).toContain(INTEGRATION_FLAG);
+    expect(error?.message).toContain("fakeFetch()");
   });
 
   /**
@@ -264,6 +336,8 @@ describe(`integration smoke — live Forge, read-only (set ${INTEGRATION_FLAG}=1
         data_notice: string;
       };
 
+      // This prints a server id into the log on failure, and that is deliberate —
+      // see "account data in a failed live run" below.
       expect(result.server.id).toBe(serverId);
       expect(result.data_notice.length).toBeGreaterThan(0);
     },
@@ -318,6 +392,20 @@ describe(`integration smoke — live Forge, read-only (set ${INTEGRATION_FLAG}=1
       // failing — no route out, a revoked token, an API that moved — this used to be
       // green while its subject rendered nothing at all: a leak check that passes
       // because nothing was checked is worse than no leak check, because it is counted.
+      //
+      // ACCOUNT DATA IN A FAILED LIVE RUN. `rendered` here is an upstream error
+      // message, and an ambiguous-organization failure lists up to ten org slugs in
+      // it; the `get_server` check above prints a server id. Both are left as they
+      // are. They only ever appear on a run someone opted into with
+      // FORGE_MCP_INTEGRATION=1 and their own FORGE_API_KEY, which means the log
+      // belongs to the account's owner and already sits wherever that token does;
+      // slugs and numeric ids are not credentials, and they are precisely what makes
+      // a live failure diagnosable — an "organization is ambiguous" error that will
+      // not say which organizations is an error nobody can act on. The credential
+      // itself never reaches here: it is asserted absent from `rendered` two lines
+      // up, and `describeHttpFailure` redacts it upstream. Contrast the credential
+      // scan in harness.test.ts, whose failure message must name no value at all
+      // because its precondition is a secret that is already committed.
       expect(
         completed,
         `list_servers did not complete, so no tool result was rendered and this check inspected nothing. The call failed with: ${rendered}`,
