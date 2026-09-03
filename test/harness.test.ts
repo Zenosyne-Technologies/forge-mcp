@@ -1,9 +1,23 @@
-import { readFileSync, readdirSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { ForgeClient } from "../src/client.js";
+import {
+  clientWriteLedgerInstalled,
+  installClientWriteLedger,
+} from "./support/client-ledger.js";
 import {
   ALLOWED_METHOD,
   WriteAttemptError,
@@ -13,13 +27,17 @@ import {
   resetCallLedger,
   servedCalls,
 } from "./support/fake-fetch.js";
-import { resolveRequestMethod } from "./support/http-method.js";
+import {
+  UNREADABLE_METHOD,
+  resolveRequestMethod,
+} from "./support/http-method.js";
 import {
   ENTITLED_REAL_FETCH_CALLER,
   NetworkAccessError,
   claimRealFetch,
   networkGuardInstalled,
 } from "./support/network-guard.js";
+import { ReadOnlyViolation, readOnlyTransport } from "./support/read-only.js";
 
 /**
  * The harness testing itself.
@@ -321,6 +339,81 @@ describe("no test performs a write of any kind", () => {
   });
 
   /**
+   * The method that is not a string, which the platform accepts and this used to miss.
+   *
+   * `fetch` applies ToString to `init.method`, so `{ method: new String("POST") }` and
+   * `{ method: { toString: () => "DELETE" } }` both send a write. A guard that tested
+   * `typeof method === "string"` saw neither, resolved GET, and then the fake SERVED
+   * the write and recorded it as a read — and `readOnlyTransport` handed it to the
+   * socket. Nobody types `new String("POST")` on purpose; a method that came back from
+   * a helper or a config object can be one without its author noticing.
+   */
+  it("coerces a method that is not a string, the way fetch itself would", () => {
+    const target = "https://forge.laravel.com/api/orgs";
+    const boxed = new String("POST") as unknown as string;
+    const stringly = { toString: () => "DELETE" } as unknown as string;
+
+    expect(resolveRequestMethod(target, { method: boxed })).toBe("POST");
+    expect(resolveRequestMethod(target, { method: stringly })).toBe("DELETE");
+    expect(resolveRequestMethod(target, { method: "patch" })).toBe("PATCH");
+    // An `init` that carries no method at all still falls through to the Request.
+    expect(
+      resolveRequestMethod(new Request(target, { method: "POST" }), {}),
+    ).toBe("POST");
+  });
+
+  it("calls a method it cannot read anything but a GET", () => {
+    const target = "https://forge.laravel.com/api/orgs";
+    // The platform would throw on this too. What matters is that the guard's answer to
+    // "I cannot tell what this is" is never GET.
+    const throwing = {
+      toString() {
+        throw new Error("no method for you");
+      },
+    } as unknown as string;
+
+    expect(resolveRequestMethod(target, { method: throwing })).toBe(
+      UNREADABLE_METHOD,
+    );
+    expect(UNREADABLE_METHOD).not.toBe("GET");
+    expect(
+      resolveRequestMethod(target, {
+        method: Symbol("POST") as unknown as string,
+      }),
+    ).not.toBe("GET");
+  });
+
+  it("refuses a non-string method at the fake seam and in the read-only transport", async () => {
+    const boxed = new String("POST") as unknown as string;
+    const forge = fakeFetch({ body: {} });
+
+    await expect(
+      forge.fetchImpl("https://forge.laravel.com/api/orgs/z/servers/1/deploy", {
+        method: boxed,
+      }),
+    ).rejects.toBeInstanceOf(WriteAttemptError);
+    expect(servedCalls()).toEqual([]);
+    expect(attemptedCalls().map((call) => call.method)).toEqual(["POST"]);
+
+    // The same value against the transport that wraps the REAL fetch on the smoke
+    // test's runs. The underlying is a stub here: nothing in this file may reach a
+    // socket, and the assertion is that the transport refuses before it would.
+    const answered: string[] = [];
+    const underlying = (async (input: unknown) => {
+      answered.push(String(input));
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const transport = readOnlyTransport(underlying);
+
+    await expect(
+      transport("https://forge.laravel.com/api/orgs/z/servers/1/deploy", {
+        method: boxed,
+      }),
+    ).rejects.toBeInstanceOf(ReadOnlyViolation);
+    expect(answered).toEqual([]);
+  });
+
+  /**
    * The second lock, and what makes it independent.
    *
    * It used to read `fakeFetch`'s ledger and nothing else, so a suite that handed
@@ -380,6 +473,51 @@ describe("no test performs a write of any kind", () => {
 });
 
 /**
+ * The two seams are re-asserted symmetrically, and this is the half that was missing.
+ *
+ * `globalThis.fetch` is checked after every test by `networkGuardInstalled()`, because
+ * a test that replaced it would leave the rest of its file unguarded. The wrapper on
+ * `ForgeClient.prototype.request` — the second write lock — had no such check, so it
+ * could be replaced with nothing noticing. The replacement does not have to be an
+ * evasion: `vi.spyOn(ForgeClient.prototype, "request")` is a thing a contributor writes
+ * to count calls, and it removes the ledger for every test after it in that file.
+ */
+describe("the client write ledger is checked as the fetch guard is", () => {
+  it("is installed for every test, not merely for this one", () => {
+    expect(clientWriteLedgerInstalled()).toBe(true);
+  });
+
+  it("notices when something replaces ForgeClient.prototype.request", () => {
+    const original = ForgeClient.prototype.request;
+    try {
+      ForgeClient.prototype.request = (async () =>
+        ({})) as typeof ForgeClient.prototype.request;
+
+      expect(clientWriteLedgerInstalled()).toBe(false);
+    } finally {
+      ForgeClient.prototype.request = original;
+    }
+
+    // Restored, so the after-each assertion this test is about does not fail on it.
+    expect(clientWriteLedgerInstalled()).toBe(true);
+  });
+
+  it("re-installs over a replacement instead of wrapping itself twice", async () => {
+    // Called again while it is already in place: a second wrapper would record every
+    // request through the client twice, and the ledger would report writes nobody made.
+    installClientWriteLedger();
+    installClientWriteLedger();
+
+    const forge = fakeFetch({ body: { data: [] } });
+    const client = new ForgeClient({ token: TOKEN, fetchImpl: forge.fetchImpl });
+    await client.request("GET", "/orgs");
+
+    expect(servedCalls().filter((call) => call.url === "/orgs")).toHaveLength(1);
+    expect(clientWriteLedgerInstalled()).toBe(true);
+  });
+});
+
+/**
  * Fixtures are recorded API payloads, and a recording is exactly the artefact a real
  * credential slips into: the account it was captured from had one, and a header, a
  * query string or a reflected error body carries it into the JSON without anybody
@@ -390,14 +528,56 @@ describe("no test performs a write of any kind", () => {
  * this must catch is by definition one nobody has seen yet.
  */
 describe("no fixture carries a credential", () => {
-  const fixtures = readdirSync(FIXTURE_DIR)
-    .filter((name) => name.endsWith(".json"))
-    .map((name) => ({ name, text: readFileSync(FIXTURE_DIR + name, "utf8") }));
+  /**
+   * Files the scan reads as text and cannot: an image or an archive is bytes, and
+   * `readFileSync(…, "utf8")` on one yields mojibake that no pattern here means
+   * anything against. Nothing under `test/` matches today; the list exists so that
+   * adding a screenshot to a fixture directory does not break the scan, and it is
+   * stated in test/README.md so the exclusion is visible rather than discovered.
+   */
+  const UNREADABLE_EXTENSIONS = [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".woff",
+    ".woff2",
+  ];
 
-  const testSources = readdirSync(TEST_DIR, { recursive: true })
-    .filter((name): name is string => typeof name === "string")
-    .filter((name) => name.endsWith(".ts") || name.endsWith(".md"))
-    .map((name) => ({ name, text: readFileSync(TEST_DIR + name, "utf8") }));
+  /**
+   * Every file under a directory, at any depth, whatever its extension.
+   *
+   * Both halves of that were wrong before. Fixtures were listed non-recursively, so a
+   * token in `test/fixtures/sub/x.json` was never read; and only `.ts`, `.md` and
+   * `.json` were opened, so a token in `test/notes.txt` was never read either. Neither
+   * is a clever hiding place — a subdirectory is what a second batch of recordings gets
+   * put in, and `.txt` is what a scratch capture is saved as.
+   */
+  function filesUnder(dir: string): { name: string; text: string }[] {
+    return readdirSync(dir, { recursive: true })
+      .filter((entry): entry is string => typeof entry === "string")
+      .filter((name) => statSync(join(dir, name)).isFile())
+      .filter(
+        (name) =>
+          !UNREADABLE_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext)),
+      )
+      .map((name) => ({ name, text: readFileSync(join(dir, name), "utf8") }));
+  }
+
+  /** Everything committed under `test/` — fixtures, sources, this file, the README. */
+  const scanned = filesUnder(TEST_DIR);
+
+  const fixtures = scanned.filter(
+    (file) => file.name.startsWith("fixtures/") && file.name.endsWith(".json"),
+  );
+  const testSources = scanned.filter(
+    (file) => !file.name.startsWith("fixtures/"),
+  );
 
   /**
    * Credential shapes that are never acceptable anywhere under `test/`.
@@ -426,6 +606,61 @@ describe("no fixture carries a credential", () => {
       pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./,
     },
   ];
+
+  /**
+   * A secret carried in a URL query string — the shape these fixtures already have.
+   *
+   * `sites-page-1.json` records `deployment_url`, and a real one ends with a
+   * `deploy/http` path and a token query parameter: an UNAUTHENTICATED write trigger. Anyone holding
+   * that URL can deploy the site, with no API token and no account. It is exactly the
+   * value that must never be committed, and it was invisible to every rule above — the
+   * opaque-run scan starts at forty characters, and a real deploy token is shorter than
+   * that.
+   *
+   * So the rule is not about length: a query parameter NAMED like a secret must carry a
+   * value that is a declared placeholder. `?token=deploytoken` passes because a row
+   * below says what it is; a thirty-two character real one fails on sight.
+   */
+  const QUERY_SECRET =
+    /[?&](?:token|api[_-]?key|api[_-]?token|access[_-]?token|auth|key|secret|signature|sig)=([^&"'`\s\\]+)/gi;
+
+  /**
+   * The placeholders a query secret may be, each obviously not a credential.
+   *
+   * Held to a shape by the check below — short, lowercase, wordlike — so that a row
+   * cannot be a real token somebody decided to keep, and so that reviewing a new row is
+   * reviewing a word rather than reviewing a length.
+   */
+  const ALLOWED_QUERY_SECRETS: { value: string; why: string }[] = [
+    {
+      value: "deploytoken",
+      why: "The deploy-trigger placeholder in sites-page-1.json. `deployment_url` is recorded so the site tools can be shown never to copy it into a tool result; the value itself is a word, not a token.",
+    },
+    {
+      value: "deploytoken2",
+      why: "The same placeholder for the second site in sites-page-1.json, distinct only so a test can tell the two recordings apart.",
+    },
+  ];
+
+  /** What a placeholder row may look like: a short lowercase word, and a reason. */
+  const QUERY_PLACEHOLDER_SHAPE = /^[a-z][a-z0-9_-]{2,19}$/;
+
+  function queryPlaceholderRowIsWellFormed(row: {
+    value: string;
+    why: string;
+  }): boolean {
+    return (
+      QUERY_PLACEHOLDER_SHAPE.test(row.value) && row.why.trim().length >= 30
+    );
+  }
+
+  /** Every query-carried secret in `text` that is not a declared placeholder. */
+  function querySecretsIn(text: string): string[] {
+    const allowed = new Set(ALLOWED_QUERY_SECRETS.map((row) => row.value));
+    return [...text.matchAll(QUERY_SECRET)]
+      .map((match) => match[1] as string)
+      .filter((value) => !allowed.has(value));
+  }
 
   /**
    * The shape a Forge API token actually has: a long opaque run of letters and
@@ -508,6 +743,110 @@ describe("no fixture carries a credential", () => {
       ).toEqual([]);
     },
   );
+
+  it.each(scanned.map((f) => [f.name, f] as const))(
+    "%s carries no secret in a query string",
+    (_name, file) => {
+      expect(
+        querySecretsIn(file.text),
+        `${file.name} carries a query parameter that names a secret and whose value is not a declared placeholder. A Forge deploy_url token is an unauthenticated write trigger: anyone holding the URL can deploy the site. Replace it with a placeholder and add the row to ALLOWED_QUERY_SECRETS.`,
+      ).toEqual([]);
+    },
+  );
+
+  it("catches the deploy trigger a real recording would carry", () => {
+    // A real `deployment_url`, with a value the length one actually has — well under
+    // the forty characters the opaque-run scan starts at, which is why that scan never
+    // saw this and why this rule reads the parameter NAME instead.
+    // Assembled from parts: written as a literal, this file would itself carry a
+    // query-borne secret and the scan above — which reads this file — would be right
+    // to fail on it.
+    const value = "a1b2c3d4".repeat(4);
+    const real = `"deployment_url": "https://forge.laravel.com/x/deploy/http?${"token"}=${value}"`;
+
+    expect(querySecretsIn(real)).toEqual([value]);
+    expect(opaqueRunsIn(real)).toEqual([]); // The rule this one exists to cover for.
+  });
+
+  it("lets the declared placeholders through, and only those", () => {
+    expect(
+      querySecretsIn("https://forge.laravel.com/x/deploy/http?token=deploytoken"),
+    ).toEqual([]);
+    expect(
+      querySecretsIn(`https://forge.laravel.com/x?${"api_key"}=notaplaceholder`),
+    ).toEqual(["notaplaceholder"]);
+    expect(querySecretsIn("https://forge.laravel.com/x?page=2")).toEqual([]);
+  });
+
+  it("holds every query placeholder to a shape a real token cannot have", () => {
+    const REASON =
+      "a reason long enough to be an actual reason rather than a placeholder";
+
+    expect(
+      queryPlaceholderRowIsWellFormed({ value: "a1b2c3d4".repeat(4), why: REASON }),
+    ).toBe(false);
+    expect(queryPlaceholderRowIsWellFormed({ value: "x", why: REASON })).toBe(
+      false,
+    );
+    expect(
+      queryPlaceholderRowIsWellFormed({ value: "deploytoken", why: "because" }),
+    ).toBe(false);
+
+    for (const row of ALLOWED_QUERY_SECRETS) {
+      expect(
+        queryPlaceholderRowIsWellFormed(row),
+        `ALLOWED_QUERY_SECRETS row "${row.value}" is not a short, obviously-fake word with a stated reason.`,
+      ).toBe(true);
+      expect(
+        scanned.some((file) => file.text.includes(row.value)),
+        `ALLOWED_QUERY_SECRETS still exempts "${row.value}", which nothing under test/ contains any more. Delete the row.`,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * The enumeration itself, which is where the two silent gaps were.
+   *
+   * A token in `test/fixtures/sub/x.json` was never read, because fixtures were listed
+   * with a non-recursive `readdirSync`. A token in `test/notes.txt` was never read,
+   * because only `.ts`, `.md` and `.json` were opened. Both are ordinary places for a
+   * recording or a scratch capture to end up, so both are read now — and this test
+   * plants a token in each and requires the scan to come back with them.
+   */
+  it("reads every file under test/, at any depth and whatever the extension", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-credential-scan-"));
+    try {
+      mkdirSync(join(root, "sub"));
+      writeFileSync(
+        join(root, "sub", "x.json"),
+        `{ "captured": "${"A1b2C3d4".repeat(6)}" }`,
+      );
+      writeFileSync(join(root, "notes.txt"), `token ${"Z9y8X7w6".repeat(6)}`);
+      writeFileSync(join(root, "screenshot.png"), "not really an image");
+
+      const found = filesUnder(root);
+
+      expect(found.map((file) => file.name).sort()).toEqual([
+        "notes.txt",
+        join("sub", "x.json"),
+      ]);
+      expect(found.flatMap((file) => opaqueRunsIn(file.text))).toHaveLength(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("really is reading the whole tree on this run, not only the top level", () => {
+    const names = scanned.map((file) => file.name);
+
+    expect(names).toContain("harness.test.ts");
+    expect(names).toContain("README.md");
+    expect(names).toContain(join("support", "fake-fetch.ts"));
+    expect(names).toContain(join("fixtures", "sites-page-1.json"));
+    // A file that is neither .ts, .md nor .json, which the old scan skipped by rule.
+    expect(names).toContain(join("tsconfig.json"));
+    expect(fixtures.length).toBeGreaterThan(0);
+  });
 
   it("scans test sources for that shape too, not fixtures alone", () => {
     const names = scannedForOpaqueStrings.map((file) => file.name);

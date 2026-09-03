@@ -238,17 +238,28 @@ describe.each(CASES)("describeHttpFailure — %s", (_name, branch) => {
  * this one used to see `case <number>:` inside the `switch` and nothing else. Two
  * perfectly ordinary ways of adding a status walked past it: a guard placed before the
  * switch (`if (status === 409) return …`) and a case label written as a named constant
- * (`case HTTP_CONFLICT:`). Both now count, across the WHOLE function body:
+ * (`case HTTP_CONFLICT:`). Three more did: a lookup table, a list, and a predicate. The
+ * shapes this scan understands, across the WHOLE function body, are exactly:
  *
  *   - `case <number>:`
  *   - `case <IDENT>:` where IDENT is a module-level numeric constant, resolved to its
  *     value out of the same source
  *   - `status === <number>` / `<number> === status`, and the `!==` forms
  *   - `status === <IDENT>` for the same resolvable constants
+ *   - `[409, 410].includes(status)` — the numbers written where they are used
+ *   - `TABLE[status]` and `LIST.includes(status)` — a module-level object or array
+ *     literal, read for the numbers in it
+ *   - `isConflict(status)` — a top-level `function` declaration, followed one level
+ *     into its body and scanned there against ITS parameter name
  *
- * And a label it CANNOT resolve is reported rather than skipped, so the failure mode is
- * "this check no longer understands the code" — a red test asking to be updated —
- * rather than a silent gap that reads like coverage.
+ * Everything else is UNRESOLVED, not ignored: an arrow-function predicate, a helper
+ * from another module, a table built at run time, a case label naming something this
+ * scan cannot value. Each of those fails the "understood every branch it read" test
+ * below with the offending text in the message, so the failure mode is "this check no
+ * longer understands the code" — a red test asking to be updated — rather than a silent
+ * gap that reads like coverage. That list is the honest boundary of the check: it is
+ * not a compiler, and a status dispatched in a shape it has never seen is a status it
+ * complains about rather than one it silently blesses.
  */
 describe("every branch describeHttpFailure has is owned by a test above", () => {
   const source = readFileSync(
@@ -294,9 +305,103 @@ describe("every branch describeHttpFailure has is owned by a test above", () => 
     return found;
   }
 
+  /** The text inside the bracket at `open`, up to its match, or `""` if unbalanced. */
+  function balancedFrom(text: string, open: number): string {
+    const opener = text[open];
+    if (opener !== "{" && opener !== "[") return "";
+    const closer = opener === "{" ? "}" : "]";
+    let depth = 0;
+    for (let index = open; index < text.length; index += 1) {
+      if (text[index] === opener) depth += 1;
+      else if (text[index] === closer) {
+        depth -= 1;
+        if (depth === 0) return text.slice(open + 1, index);
+      }
+    }
+    return "";
+  }
+
+  /** String literals removed, so `{ 409: "RFC 7231" }` does not read as two statuses. */
+  function withoutStringLiterals(text: string): string {
+    return text.replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, '""');
+  }
+
+  /**
+   * Module-level collections of statuses: `const EXTRA = { 409: …, 451: … }` and
+   * `const RETRYABLE = [409, 410]`, reduced to the numbers they carry.
+   *
+   * A lookup table indexed by `status`, and an array asked `.includes(status)`, are the
+   * two ways a contributor adds several statuses at once without writing a `case` or a
+   * `===` anywhere. Both used to be invisible to this scan.
+   */
+  function numericCollections(text: string): Map<string, number[]> {
+    const found = new Map<string, number[]>();
+    for (const match of text.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*(?=[[{])/g,
+    )) {
+      const open = (match.index ?? 0) + match[0].length;
+      const inner = withoutStringLiterals(balancedFrom(text, open));
+      found.set(
+        match[1] as string,
+        [...inner.matchAll(/\b\d+\b/g)].map((digits) => Number(digits[0])),
+      );
+    }
+    return found;
+  }
+
+  interface Helper {
+    /** The parameter the status arrives as — `s` in `isConflict(s)`, not `status`. */
+    param: string;
+    body: string;
+  }
+
+  /**
+   * Top-level `function name(param) { … }` declarations, so `if (isConflict(status))`
+   * can be followed into the predicate that actually names the number.
+   *
+   * Only the declaration form is read. An arrow-function predicate is reported as
+   * unresolved rather than guessed at — loud beats silent, and the row it asks for is a
+   * one-line diff here.
+   */
+  function helperFunctions(text: string): Map<string, Helper> {
+    const found = new Map<string, Helper>();
+    for (const match of text.matchAll(
+      /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)[^)]*\)[^{;]*(?=\{)/g,
+    )) {
+      const open = (match.index ?? 0) + match[0].length;
+      const body = balancedFrom(text, open);
+      if (body !== "") {
+        found.set(match[1] as string, { param: match[2] as string, body });
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Text that looks like `name(status)` but is not a call at all, or is a call that
+   * cannot dispatch on the value: `switch (status)` reads as one to a regex, and
+   * `String(status)` renders the status rather than branching on it.
+   */
+  const INERT_CALLS = new Set([
+    "switch",
+    "if",
+    "while",
+    "for",
+    "catch",
+    "return",
+    "typeof",
+    "await",
+    "String",
+    "Number",
+    "Boolean",
+    "parseInt",
+  ]);
+
   function statusBranchesIn(text: string, name: string): BranchScan {
     const body = functionBody(text, name);
     const constants = numericConstants(text);
+    const collections = numericCollections(text);
+    const helpers = helperFunctions(text);
     const statuses = new Set<number>();
     const unresolved: string[] = [];
 
@@ -314,19 +419,75 @@ describe("every branch describeHttpFailure has is owned by a test above", () => 
       unresolved.push(trimmed);
     };
 
-    for (const match of body.matchAll(/\bcase\s+([^:\n]+):/g)) {
-      resolve(match[1] as string);
-    }
-    for (const match of body.matchAll(
-      /\bstatus\s*[=!]==?\s*([A-Za-z_$\d][\w$]*)/g,
-    )) {
-      resolve(match[1] as string);
-    }
-    for (const match of body.matchAll(
-      /([A-Za-z_$\d][\w$]*)\s*[=!]==?\s*status\b/g,
-    )) {
-      resolve(match[1] as string);
-    }
+    /** Follow a named collection, or say so when it carries no readable numbers. */
+    const resolveCollection = (identifier: string, how: string): void => {
+      const numbers = collections.get(identifier);
+      if (numbers === undefined || numbers.length === 0) {
+        unresolved.push(`${how} — no readable numeric ${identifier}`);
+        return;
+      }
+      for (const value of numbers) statuses.add(value);
+    };
+
+    const followed = new Set<string>();
+
+    const scan = (region: string, subject: string, depth: number): void => {
+      const at = subject.replace(/[$]/g, "\\$&");
+
+      for (const match of region.matchAll(/\bcase\s+([^:\n]+):/g)) {
+        resolve(match[1] as string);
+      }
+      for (const match of region.matchAll(
+        new RegExp(`\\b${at}\\s*[=!]==?\\s*([A-Za-z_$\\d][\\w$]*)`, "g"),
+      )) {
+        resolve(match[1] as string);
+      }
+      for (const match of region.matchAll(
+        new RegExp(`([A-Za-z_$\\d][\\w$]*)\\s*[=!]==?\\s*${at}\\b`, "g"),
+      )) {
+        resolve(match[1] as string);
+      }
+
+      // `[409, 410].includes(status)` — the list written where it is used.
+      for (const match of region.matchAll(
+        new RegExp(`\\[([^\\]]*)\\]\\s*\\.includes\\(\\s*${at}\\s*\\)`, "g"),
+      )) {
+        for (const item of (match[1] as string).split(",")) {
+          if (item.trim() !== "") resolve(item);
+        }
+      }
+
+      // `RETRYABLE.includes(status)` and `EXTRA[status]` — the list declared elsewhere.
+      for (const match of region.matchAll(
+        new RegExp(
+          `\\b([A-Za-z_$][\\w$]*)\\s*(?:\\.includes\\(\\s*${at}\\s*\\)|\\[\\s*${at}\\s*\\])`,
+          "g",
+        ),
+      )) {
+        resolveCollection(match[1] as string, `${match[1]} applied to ${subject}`);
+      }
+
+      // `isConflict(status)` — a predicate declared outside this function body. The
+      // lookbehind keeps `RETRYABLE.includes(status)`, already read above, from being
+      // read a second time as a call to something named `includes`.
+      for (const match of region.matchAll(
+        new RegExp(`(?<![.\\w$])([A-Za-z_$][\\w$]*)\\s*\\(\\s*${at}\\s*[,)]`, "g"),
+      )) {
+        const callee = match[1] as string;
+        if (callee === name || INERT_CALLS.has(callee)) continue;
+        const helper = helpers.get(callee);
+        if (helper === undefined || depth >= 3 || followed.has(callee)) {
+          unresolved.push(
+            `${callee}(${subject}) — not a top-level function declaration this scan can follow`,
+          );
+          continue;
+        }
+        followed.add(callee);
+        scan(helper.body, helper.param, depth + 1);
+      }
+    };
+
+    scan(body, "status", 0);
 
     return {
       statuses: [...statuses].sort((a, b) => a - b),
@@ -415,6 +576,98 @@ describe("every branch describeHttpFailure has is owned by a test above", () => 
       expect(
         statusBranchesIn(withConstant, "describeHttpFailure").statuses,
       ).toEqual([423]);
+    });
+
+    /**
+     * The three shapes a stage 3 write path is most likely to arrive in.
+     *
+     * `409` and `423` are the statuses a write path adds, and none of these is an
+     * evasion — a table, a list and a predicate are how somebody adds two statuses at
+     * once without thinking about this file at all. Each of them used to leave the
+     * suite green with a status nobody owned.
+     */
+    const beforeTheSwitch = (...lines: string[]): string =>
+      SWITCH_ONLY.replace(
+        "  switch (status) {",
+        [...lines, "  switch (status) {"].join("\n"),
+      );
+
+    it("reads a lookup table indexed by the status", () => {
+      const withTable = [
+        'const EXTRA: Record<number, string> = { 409: "conflict", 451: "legal" };',
+        beforeTheSwitch(
+          "  const extra = EXTRA[status];",
+          "  if (extra !== undefined) return extra;",
+        ),
+      ].join("\n");
+
+      expect(statusBranchesIn(withTable, "describeHttpFailure")).toMatchObject({
+        statuses: [401, 409, 451],
+        unresolved: [],
+      });
+    });
+
+    it("reads a list the branch asks `.includes(status)`, written inline or named", () => {
+      const inline = beforeTheSwitch(
+        '  if ([409, 410].includes(status)) return "gone or conflicting";',
+      );
+      expect(statusBranchesIn(inline, "describeHttpFailure").statuses).toEqual([
+        401, 409, 410,
+      ]);
+
+      const named = [
+        "const RETRYABLE = [409, 423];",
+        beforeTheSwitch('  if (RETRYABLE.includes(status)) return "retry";'),
+      ].join("\n");
+      expect(statusBranchesIn(named, "describeHttpFailure")).toMatchObject({
+        statuses: [401, 409, 423],
+        unresolved: [],
+      });
+    });
+
+    it("follows a predicate declared outside the function body, on its own parameter", () => {
+      const withPredicate = [
+        "function isConflict(s: number): boolean {",
+        "  return s === 409;",
+        "}",
+        beforeTheSwitch('  if (isConflict(status)) return "conflict";'),
+      ].join("\n");
+
+      expect(
+        statusBranchesIn(withPredicate, "describeHttpFailure"),
+      ).toMatchObject({ statuses: [401, 409], unresolved: [] });
+    });
+
+    it("says so loudly when a predicate or a table is one it cannot read", () => {
+      const arrowPredicate = [
+        "const isConflict = (s: number) => s === 409;",
+        beforeTheSwitch('  if (isConflict(status)) return "conflict";'),
+      ].join("\n");
+      const arrow = statusBranchesIn(arrowPredicate, "describeHttpFailure");
+
+      expect(arrow.statuses).toEqual([401]);
+      expect(arrow.unresolved.join(" ")).toContain("isConflict(status)");
+
+      const importedTable = beforeTheSwitch(
+        "  const extra = EXTRA[status];",
+        "  if (extra !== undefined) return extra;",
+      );
+      const imported = statusBranchesIn(importedTable, "describeHttpFailure");
+
+      expect(imported.statuses).toEqual([401]);
+      expect(imported.unresolved.join(" ")).toContain("EXTRA");
+    });
+
+    it("does not mistake a call that merely renders the status for a branch", () => {
+      const rendered = beforeTheSwitch(
+        "  const shown = String(status);",
+        '  if (shown === "") return "impossible";',
+      );
+
+      expect(statusBranchesIn(rendered, "describeHttpFailure")).toMatchObject({
+        statuses: [401],
+        unresolved: [],
+      });
     });
 
     it("reports a label it cannot resolve instead of ignoring it", () => {

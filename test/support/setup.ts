@@ -6,14 +6,21 @@
  * which is the whole point of putting the standing guarantees of this harness here
  * rather than in a helper each test has to remember to call:
  *
- * 1. **No network.** `globalThis.fetch` is replaced with a refusal at module scope
- *    here, again before every test, and asserted to still be the refusal after every
- *    test — so a test that reaches the real Forge API fails by name instead of passing
- *    against a live account.
- * 2. **No writes.** Every call that was actually answered is inspected after each
- *    test, and a non-GET among them fails the test that made it. `fakeFetch` already
- *    refuses one at the seam; this is the independent second lock, so removing either
+ * 1. **No network through `fetch`.** `globalThis.fetch` is replaced with a refusal at
+ *    module scope here, again before every test, and asserted to still be the refusal
+ *    after every test — so a test that reaches the real Forge API through `fetch` fails
+ *    by name instead of passing against a live account. It is a `fetch`-level guard:
+ *    `node:http` is a different door and this does not lock it.
+ * 2. **No writes through the two seams.** Every call that was actually answered by
+ *    `fakeFetch` or issued through `ForgeClient` is inspected after each test, and a
+ *    non-GET among them fails the test that made it. `fakeFetch` already refuses one at
+ *    the seam; the client wrapper is the independent second lock, so removing either
  *    one on its own does not open the door.
+ *
+ * Neither is a sandbox, and neither tries to be. See test/README.md, "What these guards
+ * are for": they catch the honest mistake — the client built with no `fetchImpl`, the
+ * write left in a fixture-driven test — and a contributor determined to get around them
+ * can. That trade is deliberate.
  *
  * WHY THE GUARD IS ARMED AT MODULE SCOPE. Arming it in `beforeEach` alone left two
  * windows open. A test file's own module scope and its `beforeAll` hooks run before
@@ -27,9 +34,13 @@
  * that went through `fakeFetch`, and nothing else. A suite can hand `ForgeClient` a
  * fetch it wrote by hand — `test/org.test.ts` does, to inspect the abort signal — and
  * such a stub would answer a POST with the after-each check none the wiser. Wrapping
- * `ForgeClient.prototype.request` puts every request issued through the client under
- * the check, whatever fetch is behind it, which is what "independent second lock"
- * has to mean to be worth having.
+ * `ForgeClient.prototype.request` (in `test/support/client-ledger.ts`) puts every
+ * request issued through the client under the check, whatever fetch is behind it.
+ *
+ * BOTH SEAMS ARE RE-ASSERTED, for the same reason and with the same words. A test that
+ * replaces `globalThis.fetch`, or that spies on `ForgeClient.prototype.request`, leaves
+ * the rest of its file running without that guard; the failure belongs to the test that
+ * did it, not to whoever writes the next one.
  *
  * Both checks run in `afterEach` rather than once at the end, because a failure that
  * names the test responsible is a failure someone can fix in a minute, and one that
@@ -37,13 +48,11 @@
  */
 import { afterEach, beforeEach, expect } from "vitest";
 
-import { ForgeClient } from "../../src/client.js";
 import {
-  recordAttempt,
-  recordServed,
-  resetCallLedger,
-  servedCalls,
-} from "./fake-fetch.js";
+  clientWriteLedgerInstalled,
+  installClientWriteLedger,
+} from "./client-ledger.js";
+import { resetCallLedger, servedCalls } from "./fake-fetch.js";
 import { installNetworkGuard, networkGuardInstalled } from "./network-guard.js";
 
 // Armed at import time — before the test file, its module scope and its `beforeAll`.
@@ -52,6 +61,7 @@ installClientWriteLedger();
 
 beforeEach(() => {
   installNetworkGuard();
+  installClientWriteLedger();
   resetCallLedger();
 });
 
@@ -72,35 +82,12 @@ afterEach(() => {
       `run unguarded and could reach the real Forge API. Restore it, or inject a ` +
       `fake through ForgeClient's fetchImpl option instead of patching the global.`,
   ).toBe(true);
+
+  expect(
+    clientWriteLedgerInstalled(),
+    `"${test}" left ForgeClient.prototype.request replaced — a vi.spyOn on it does ` +
+      `exactly this — so the write ledger no longer sees requests issued through the ` +
+      `client, and the after-each write check above would pass on a file that writes. ` +
+      `Restore the method, or inject a fake through ForgeClient's fetchImpl option.`,
+  ).toBe(true);
 });
-
-/**
- * Report every `ForgeClient` request into the ledger the after-each check reads.
- *
- * A request that RESOLVES was answered, and that is what "served" means: the refusal
- * suites deliberately attempt a write and require it to be refused, so an attempt that
- * threw must not fail the test that proved it throws.
- *
- * Wrapping the prototype changes no behaviour: it forwards arguments and result
- * untouched, and lives in the harness rather than in `src/`, so production code
- * carries nothing that exists only for tests.
- */
-function installClientWriteLedger(): void {
-  type Request = typeof ForgeClient.prototype.request;
-  const original = ForgeClient.prototype.request as Request;
-
-  const wrapped = async function (
-    this: ForgeClient,
-    method: "GET" | "POST" | "PUT" | "DELETE",
-    path: string,
-    body?: unknown,
-  ): Promise<unknown> {
-    const call = { url: path, method };
-    recordAttempt(call);
-    const result = await original.call(this, method, path, body);
-    recordServed(call);
-    return result;
-  };
-
-  ForgeClient.prototype.request = wrapped as Request;
-}
