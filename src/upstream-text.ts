@@ -9,6 +9,16 @@
  * so they get one definition of what is safe, in one module neither of them owns.
  * Two copies of a rule are two rules the moment one is edited.
  *
+ * TWO FUNCTIONS, ONE RULE. `neutraliseUpstreamText` flattens a value to a single
+ * line, and is what every name, domain, alias, branch and status goes through.
+ * `neutraliseUpstreamScript` keeps line breaks, and exists for the one value whose
+ * line structure IS its content: a site's deployment script, where collapsing the
+ * newlines runs five commands together into a sentence no operator can read back.
+ * They are variants and not two rules: both are built from the single allowlist
+ * string below, and the second spares exactly one code point (U+000A) more than the
+ * first. Everything invisible is removed by both, identically — which is asserted,
+ * character by character, rather than asserted in this comment.
+ *
  * The rule is an ALLOWLIST, and that is the load-bearing decision. The blacklist it
  * replaces (`\p{Cc}\p{Cf}` plus two separators) was not merely incomplete, it was
  * incompletable: a proof of concept smuggled 56 bytes of hidden ASCII through
@@ -96,18 +106,64 @@
 const ZERO_WIDTH = /\p{Default_Ignorable_Code_Point}/gu;
 
 /**
- * Anything that is not a letter, a digit, punctuation, a symbol or a mark — plus the
- * one blank-rendering symbol that is.
+ * THE allowlist, as the body of a character class, written once.
  *
- * By the time this runs the zero-width characters are already gone, so everything it
- * matches occupied width and a space is the truthful replacement.
+ * A letter, a digit, punctuation, a symbol or a mark. Every rule in this module is
+ * built from this one string rather than from a regex literal of its own, because
+ * there are now two callers of it — the flat rule below and the script rule after it
+ * — and two literals would be two allowlists the moment one of them was edited. That
+ * is the argument this module makes for living in one file at all, applied one level
+ * down: the file stops being the single definition of "safe" the moment it holds two
+ * definitions of its own.
+ *
+ * Exported so a test can assert both patterns are built from this and not from a
+ * copy. The sweep in `test/upstream-text.test.ts` then proves it behaviourally, by
+ * requiring the two functions to agree on every character that is not a newline.
+ */
+export const ALLOWED_VISIBLE_CLASSES = "\\p{L}\\p{N}\\p{P}\\p{S}\\p{M}";
+
+/**
+ * Everything the allowlist denies — optionally sparing the characters in `spared`.
+ *
+ * `spared` is the ONLY axis on which the two rules below differ, and it is a
+ * character-class fragment rather than a boolean so the difference reads as what it
+ * is: the script rule admits exactly one code point more than the text rule does.
  *
  * The `u` flag is what makes `\p{...}` mean a Unicode property rather than a literal
  * `p`, what makes an astral code point (a tag character, a supplementary variation
  * selector) match as one unit instead of as two surrogate halves, and what lets a
  * lone surrogate — a half with no partner — match as itself.
+ *
+ * U+2800 is named beside the class because it is a symbol the allowlist admits and
+ * that draws nothing at all.
  */
-const NOT_VISIBLE_TEXT = /[^\p{L}\p{N}\p{P}\p{S}\p{M}]|\u2800/gu;
+function denialPattern(spared = ""): RegExp {
+  return new RegExp(`[^${ALLOWED_VISIBLE_CLASSES}${spared}]|\\u2800`, "gu");
+}
+
+/**
+ * Anything that is not a letter, a digit, punctuation, a symbol or a mark — plus the
+ * one blank-rendering symbol that is.
+ *
+ * By the time this runs the zero-width characters are already gone, so everything it
+ * matches occupied width and a space is the truthful replacement.
+ */
+const NOT_VISIBLE_TEXT = denialPattern();
+
+/**
+ * The same denial, sparing U+000A LINE FEED and nothing else.
+ *
+ * One newline character, so that "a line" means the same thing to the model reading
+ * the result, to the human auditing the transcript, and to this file. U+2028 LINE
+ * SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEXT LINE and a lone U+000D all stay
+ * denied: each of them begins a new line in SOME renderer and not in others, and a
+ * disagreement about where a line ends is exactly the seam a payload paints forged
+ * structure into. A carriage return is the sharpest of them — on a terminal it moves
+ * the cursor back over what was already printed, so what is displayed is not what
+ * was sent — so the only one that survives here is the one in a CRLF pair, and it
+ * survives by being rewritten to a line feed before this pattern ever sees it.
+ */
+const NOT_VISIBLE_SCRIPT = denialPattern("\\n");
 
 /**
  * Put one fragment of upstream text into the single, visible, flattened form both
@@ -136,6 +192,68 @@ export function neutraliseUpstreamText(raw: string): string {
     .normalize("NFC")
     .replace(NOT_VISIBLE_TEXT, " ")
     .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The same rule for a value whose LINE STRUCTURE is content: a deployment script.
+ *
+ * Why a second function rather than the one above. A deployment script is multi-line
+ * shell, and `neutraliseUpstreamText` collapses every whitespace run to one space —
+ * so a five-line script arrives as
+ *
+ *     cd /home/forge/example.com git pull origin main composer install --no-dev …
+ *
+ * which is not merely ugly. It is WRONG: the newlines were the only thing saying
+ * where one command ended and the next began, and an operator reading that cannot
+ * tell whether `git pull origin main composer install` is one command or two.
+ * Returning it is worse than returning nothing, because it reads as a faithful copy.
+ *
+ * Why the flat rule is still right everywhere else. A newline in a server NAME, a
+ * site domain, an alias or a git branch is not content — nothing legitimate puts one
+ * there, and the only reason to send one is to paint rows, headers or a fake end of
+ * output into a field the reader expects to be a single word. In a script a newline
+ * is the author's own punctuation. So the difference between the two functions is a
+ * judgement about the FIELD, not a relaxation of the rule: `denialPattern("\\n")`
+ * spares one character and denies everything the other denies, out of the same
+ * allowlist string, so neither can be widened without widening both.
+ *
+ * What is still removed, unchanged from the flat rule: every
+ * `Default_Ignorable_Code_Point` (deleted — the variation selectors, the tag block,
+ * the zero-width joiner and space, the bidi controls, the blank Hangul fillers) and
+ * U+2800; everything outside the allowlist becomes a space; the whole is NFC.
+ *
+ * What is different, and only this:
+ *
+ *  - CRLF becomes LF first, so a Windows-authored script keeps its lines instead of
+ *    growing a space at the end of every one of them. It runs after the zero-width
+ *    deletion, so a joiner smuggled between the CR and the LF cannot hide the pair.
+ *  - U+000A survives the denial. Nothing else that starts a line does — U+2028,
+ *    U+2029, U+0085 and a lone U+000D all become a space, so the result has exactly
+ *    one kind of line break in it.
+ *  - The collapse is spent in two directions instead of one. Horizontal runs become
+ *    a single space, so indentation, alignment and a column of padding cannot be
+ *    used to paint a shape. Vertical runs become a single newline, so blank lines
+ *    cannot be used to push the visible end of the script off a reader's screen.
+ *
+ * WHAT THIS COSTS. Indentation does not survive: every line comes back trimmed and
+ * flush left, and a heredoc that relied on leading tabs (`<<-`) reads correctly as
+ * text but is no longer the bytes the server runs. Blank lines between sections are
+ * gone. Both are stated here rather than discovered later — this output is for a
+ * reader deciding what a site does on deploy, not a copy to be executed anywhere.
+ *
+ * The result is a sequence of non-empty lines a human can see, or the empty string.
+ */
+export function neutraliseUpstreamScript(raw: string): string {
+  return raw
+    .replace(ZERO_WIDTH, "")
+    .normalize("NFC")
+    .replace(/\r\n/g, "\n")
+    .replace(NOT_VISIBLE_SCRIPT, " ")
+    // Only spaces and newlines remain: everything else denied became a space, and a
+    // tab was never allowed through in the first place.
+    .replace(/ +/g, " ")
+    .replace(/ ?\n[ \n]*/g, "\n")
     .trim();
 }
 

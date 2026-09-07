@@ -1,0 +1,90 @@
+{
+  "data": [
+    {
+      "id": "9001",
+      "type": "deployments",
+      "attributes": {
+        "commit": {
+          "hash": "4f1c9ab2e70d",
+          "author": "Andras",
+          "message": "Ship the deployment read tools",
+          "branch": "main"
+        },
+        "type": "quick",
+        "status": "finished",
+        "started_at": "2025-08-05T10:00:00Z",
+        "ended_at": "2025-08-05T10:01:12Z",
+        "created_at": "2025-08-05T10:00:00Z",
+        "updated_at": "2025-08-05T10:01:12Z"
+      },
+      "relationships": {
+        "site": { "data": { "id": "5001", "type": "sites" } },
+        "initiator": { "data": { "id": "77", "type": "users" } }
+      }
+    },
+    {
+      "id": "9002",
+      "type": "deployments",
+      "attributes": {
+        "commit": {
+          "hash": null,
+          "author": null,
+          "message": null,
+          "branch": null
+        },
+        "type": "manual",
+        "status": "failed",
+        "started_at": "2025-08-04T09:00:00Z",
+        "ended_at": "2025-08-04T09:00:41Z",
+        "created_at": "2025-08-04T09:00:00Z",
+        "updated_at": "2025-08-04T09:00:41Z"
+      },
+      "relationships": {
+        "site": { "data": { "id": "5001", "type": "sites" } },
+        "initiator": { "data": null }
+      }
+    },
+    {
+      "id": "9003",
+      "type": "deployments",
+      "attributes": {
+        "type": "quick",
+        "status": "queued",
+        "started_at": null,
+        "ended_at": null,
+        "created_at": "2025-08-03T08:00:00Z",
+        "updated_at": "2025-08-03T08:00:00Z"
+      },
+      "relationships": {
+        "site": { "data": { "id": "5001", "type": "sites" } },
+        "initiator": { "data": { "id": "77", "type": "users" } }
+      }
+    }
+  ],
+  "links": { "first": null, "last": null, "prev": null, "next": null },
+  "meta": {
+    "path": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001/sites/5001/deployments",
+    "per_page": 50,
+    "next_cursor": "eyJpZCI6OTAwM30",
+    "prev_cursor": null
+  },
+  "included": [
+    {
+      "id": "77",
+      "type": "users",
+      "attributes": {
+        "name": "Deploy Bot",
+        "email": "bot@example.test"
+      }
+    },
+    {
+      "id": "5001",
+      "type": "sites",
+      "attributes": {
+        "name": "zenosyne.tech",
+        "deployment_script": "cd /home/forge/zenosyne.tech && git pull origin main",
+        "shared_paths": { "storage": "/home/forge/zenosyne.tech/storage" }
+      }
+    }
+  ]
+}

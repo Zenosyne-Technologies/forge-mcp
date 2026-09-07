@@ -16,7 +16,12 @@ import { UPSTREAM_LABEL, describeHttpFailure } from "../src/errors.js";
 import { OrganizationResolver } from "../src/org.js";
 import { tools, type ToolContext } from "../src/tools/index.js";
 import type { ServerView } from "../src/tools/servers.js";
-import { boundToLength, neutraliseUpstreamText } from "../src/upstream-text.js";
+import {
+  ALLOWED_VISIBLE_CLASSES,
+  boundToLength,
+  neutraliseUpstreamScript,
+  neutraliseUpstreamText,
+} from "../src/upstream-text.js";
 import { fakeFetch, type FakeFetch } from "./support/fake-fetch.js";
 
 /** Obviously fake. A real Forge credential never enters this repository. */
@@ -597,5 +602,190 @@ describe("one rule, both paths", () => {
     expect(readFileSync("src/tools/common.ts", "utf8")).toContain(
       'from "../upstream-text.js"',
     );
+  });
+});
+
+/**
+ * A deployment script is the one upstream value whose LINE STRUCTURE is content, so
+ * it gets the one variant of this rule. A variant is the dangerous kind of change —
+ * two functions that were meant to be the same rule, edited on different days — so
+ * what is asserted here is not that the second one works, it is that the two cannot
+ * come apart: they are built from one exported allowlist, and they agree, character
+ * by character, on everything but the newline.
+ */
+describe("two variants, one allowlist", () => {
+  it("agrees with the flat rule on every default-ignorable code point", () => {
+    let ignorable = 0;
+    for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+      const char = String.fromCodePoint(codePoint);
+      if (!/\p{Default_Ignorable_Code_Point}/u.test(char)) continue;
+      ignorable += 1;
+      // Deleted by both, with no fabricated gap, exactly as the flat rule does it.
+      expect(
+        neutraliseUpstreamScript(`a${char}b`),
+        `U+${codePoint.toString(16).toUpperCase()}`,
+      ).toBe("ab");
+    }
+    expect(ignorable).toBeGreaterThan(4000);
+  });
+
+  it("agrees with the flat rule on every character that is not a newline", () => {
+    let compared = 0;
+    const check = (codePoint: number): void => {
+      const char = String.fromCodePoint(codePoint);
+      if (char === "\n") return;
+      compared += 1;
+      expect(
+        neutraliseUpstreamScript(`a${char}b`),
+        `U+${codePoint.toString(16).toUpperCase()}`,
+      ).toBe(neutraliseUpstreamText(`a${char}b`));
+    };
+
+    // A stride across every plane, plus every format character one at a time: the
+    // class a divergence would most plausibly be introduced in.
+    for (let plane = 0; plane <= 0x10; plane += 1) {
+      for (let low = 0; low <= 0xffff; low += 977) check(plane * 0x10000 + low);
+    }
+    for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+      if (/\p{Cf}/u.test(String.fromCodePoint(codePoint))) check(codePoint);
+    }
+
+    expect(compared).toBeGreaterThan(1000);
+  });
+
+  it("admits exactly the characters the exported allowlist admits", () => {
+    // Both functions tied to the same exported string, not merely to each other: a
+    // rule widened in one place and copied into the other would still pass the
+    // agreement test above, and fails here.
+    const allowed = new RegExp(`^[${ALLOWED_VISIBLE_CLASSES}]$`, "u");
+    const BRAILLE_BLANK = String.fromCodePoint(0x2800);
+
+    for (let plane = 0; plane <= 0x10; plane += 1) {
+      for (let low = 0; low <= 0xffff; low += 1013) {
+        const codePoint = plane * 0x10000 + low;
+        const char = String.fromCodePoint(codePoint);
+        if (char === "\n") continue;
+        const survives =
+          allowed.test(char) &&
+          !/\p{Default_Ignorable_Code_Point}/u.test(char) &&
+          char !== BRAILLE_BLANK;
+        const label = `U+${codePoint.toString(16).toUpperCase()}`;
+        // NFC is part of both rules, so the expectation is normalised too.
+        const kept = `a${char}b`.normalize("NFC");
+
+        expect(neutraliseUpstreamText(`a${char}b`) === kept, label).toBe(
+          survives,
+        );
+        expect(neutraliseUpstreamScript(`a${char}b`) === kept, label).toBe(
+          survives,
+        );
+      }
+    }
+  });
+
+  it("writes the allowlist exactly once in the module", () => {
+    // The classes appear in prose in that file's header, so the check is for the
+    // ESCAPED form, which only a string literal has. One line declares it, and
+    // every pattern in the module is built from that line.
+    const source = readFileSync("src/upstream-text.ts", "utf8");
+    const declaring = source
+      .split("\n")
+      .filter((line) => line.includes("\\\\p{"));
+
+    expect(declaring).toHaveLength(1);
+    expect(declaring[0]).toContain("ALLOWED_VISIBLE_CLASSES");
+    // The exported value, rendered as a TypeScript source line would render it.
+    expect(declaring[0]).toContain(
+      ALLOWED_VISIBLE_CLASSES.replaceAll("\\", "\\\\"),
+    );
+  });
+});
+
+/**
+ * What the variant is FOR. The flat rule returns a five-line deploy script as one
+ * line, which is not merely ugly: the newlines were the only thing saying where one
+ * command ended, so the result reads as a faithful copy of something the operator
+ * never wrote.
+ */
+describe("the script rule — line structure is content", () => {
+  const SCRIPT = [
+    "cd /home/forge/example.com",
+    "git pull origin main",
+    "composer install --no-dev",
+    "php artisan migrate --force",
+    "php artisan queue:restart",
+  ];
+
+  it("keeps a realistic deployment script on separate lines", () => {
+    const out = neutraliseUpstreamScript(SCRIPT.join("\n"));
+
+    expect(out.split("\n")).toEqual(SCRIPT);
+    // The failure it exists to prevent, stated as the contrast.
+    expect(neutraliseUpstreamText(SCRIPT.join("\n"))).toBe(SCRIPT.join(" "));
+  });
+
+  it("normalises CRLF to one newline and spaces a lone carriage return", () => {
+    expect(neutraliseUpstreamScript("one\r\ntwo")).toBe("one\ntwo");
+    // A bare CR moves a terminal's cursor back over what it already printed, so it
+    // is not a line break here — it is a denied character that occupied width.
+    expect(neutraliseUpstreamScript("one\rtwo")).toBe("one two");
+    expect(neutraliseUpstreamScript("one\n\rtwo")).toBe("one\ntwo");
+  });
+
+  it("refuses every line separator but U+000A", () => {
+    const SEPARATORS: Record<string, string> = {
+      "U+2028 line separator": String.fromCodePoint(0x2028),
+      "U+2029 paragraph separator": String.fromCodePoint(0x2029),
+      "U+0085 next line": String.fromCodePoint(0x85),
+      "U+000B line tabulation": String.fromCodePoint(0x0b),
+      "U+000C form feed": String.fromCodePoint(0x0c),
+    };
+
+    for (const [name, char] of Object.entries(SEPARATORS)) {
+      // One newline character, so a reader and the model agree on what a line is.
+      expect(neutraliseUpstreamScript(`one${char}two`), name).toBe("one two");
+    }
+  });
+
+  it("collapses indentation and blank lines, never two commands into one", () => {
+    const painted = [
+      "if [ -f artisan ]; then",
+      "        php artisan migrate --force",
+      "",
+      "",
+      "                    php artisan queue:restart",
+      "fi",
+    ].join("\n");
+
+    expect(neutraliseUpstreamScript(painted).split("\n")).toEqual([
+      "if [ -f artisan ]; then",
+      "php artisan migrate --force",
+      "php artisan queue:restart",
+      "fi",
+    ]);
+  });
+
+  it("emits only visible characters, single spaces and single newlines", () => {
+    // Sandwiched between letters so nothing is trimmed off either end, and the two
+    // halves joined by a CRLF so the pair is exercised in the same pass.
+    const hostile = `a${Object.values({ ...DELETED, ...SPACED }).join("x")}b`;
+    const out = neutraliseUpstreamScript(`${hostile}\r\n${hostile}`);
+
+    expect(out).toMatch(
+      /^(?:[\p{L}\p{N}\p{P}\p{S}\p{M}]|(?<! ) |(?<![ \n])\n)+$/u,
+    );
+    expect(out).not.toMatch(/^[ \n]|[ \n]$/);
+    expect(/\p{Default_Ignorable_Code_Point}/u.test(out)).toBe(false);
+    expect(out).not.toContain(String.fromCodePoint(0x2800));
+    // Every line break in the output came from a U+000A in the input — the CRLF and
+    // the bare newline in SPACED — and from nothing else that renders as a break.
+    const breaks = (hostile.match(/\n/gu) ?? []).length * 2 + 1;
+    expect(out.split("\n")).toHaveLength(breaks + 1);
+  });
+
+  it("keeps every script byte-identical, as the flat rule does", () => {
+    for (const [name, value] of Object.entries(SCRIPTS)) {
+      expect(neutraliseUpstreamScript(value), name).toBe(value);
+    }
   });
 });

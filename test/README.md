@@ -144,6 +144,13 @@ Rules:
   and `deployment_script` are in `sites-page-1.json`, and `local_public_key` is in the
   server fixtures, precisely so the suites can prove they never reach a tool result. A
   fixture trimmed to only the fields the code reads cannot prove that.
+- **A value that is SHAPED like a credential is replaced, even when it is not one.**
+  A real git commit hash is forty hex characters, which is precisely what the
+  opaque-run scan refuses, so `deployments-page-1.json` records a twelve-character
+  one — the same reason `deployment_url` carries `deploytoken`. Where a suite needs
+  the real length it builds it at run time (`"a1b2c3d4".repeat(5)` in
+  `tools.test.ts`), so no committed line holds a forty-character run and no
+  allowlist row has to be added to excuse one.
 - **No credential, ever.** Enforced, not requested — see below. `deployment_url` is the
   sharp one: a real Forge deploy trigger is an **unauthenticated write URL**, and anyone
   holding it can deploy the site with no token and no account. The recorded ones carry

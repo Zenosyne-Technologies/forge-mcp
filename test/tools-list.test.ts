@@ -92,6 +92,8 @@ describe("tools/list over the protocol", () => {
       "get_server_status",
       "list_sites",
       "get_site",
+      "get_deployments",
+      "get_deployment_script",
     ]);
     for (const name of names) {
       const advertised = listed.tools.find((t) => t.name === name);
@@ -128,6 +130,35 @@ describe("tools/list over the protocol", () => {
     expect(
       listed.tools.find((t) => t.name === "list_sites")?.inputSchema.required,
     ).toEqual(["server_id"]);
+  });
+
+  it("publishes both ids as required on the two deployment tools", async () => {
+    const client = await connectedClient(fakeFetch({ body: {} }));
+
+    const listed = await client.listTools();
+    const deployments = listed.tools.find((t) => t.name === "get_deployments");
+    const script = listed.tools.find((t) => t.name === "get_deployment_script");
+
+    // Both are server-scoped AND site-scoped: unlike get_site, neither can resolve
+    // a site from its id alone, so a model that is handed only one of the two ids
+    // has to be told to go and find the other rather than guess it.
+    expect((deployments?.inputSchema.required ?? []).slice().sort()).toEqual([
+      "server_id",
+      "site_id",
+    ]);
+    expect(Object.keys(deployments?.inputSchema.properties ?? {}).sort()).toEqual(
+      ["cursor", "page_size", "server_id", "site_id"],
+    );
+
+    expect((script?.inputSchema.required ?? []).slice().sort()).toEqual([
+      "server_id",
+      "site_id",
+    ]);
+    // A detail read: no paging arguments to advertise, so none are published.
+    expect(Object.keys(script?.inputSchema.properties ?? {}).sort()).toEqual([
+      "server_id",
+      "site_id",
+    ]);
   });
 
   it("publishes site_id as get_site's only argument, required and alone", async () => {
@@ -179,6 +210,29 @@ describe("tools/call over the protocol", () => {
     expect(forge.calls[0]?.url).toContain("/orgs/zenosyne-ltd/sites/5001");
     // The compound document's side-load does not survive the trip to the client.
     expect(textOf(result)).not.toContain("local_public_key");
+  });
+
+  it("returns a deployment script as text content, lines and all", async () => {
+    const forge = fakeFetch({ body: fixture("deployment-script-single") });
+    const client = await connectedClient(forge);
+
+    const result = await client.callTool({
+      name: "get_deployment_script",
+      arguments: { server_id: "1001", site_id: "5001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as {
+      deployment_script: { content: string; auto_source: boolean };
+    };
+    // Over the wire, through the SDK, out the other side: still separate lines.
+    expect(payload.deployment_script.content.split("\n")).toContain(
+      "php artisan queue:restart",
+    );
+    expect(payload.deployment_script.auto_source).toBe(true);
+    expect(forge.calls[0]?.url).toContain(
+      "/servers/1001/sites/5001/deployments/script",
+    );
   });
 
   it("returns the 404 message as an error result rather than a transport failure", async () => {

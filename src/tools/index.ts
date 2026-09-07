@@ -6,7 +6,12 @@ import {
   getServerTool,
   listServersTool,
 } from "./servers.js";
-import { getSiteTool, listSitesTool } from "./sites.js";
+import {
+  getDeploymentScriptTool,
+  getDeploymentsTool,
+  getSiteTool,
+  listSitesTool,
+} from "./sites.js";
 
 /** Everything a tool handler is given. */
 export interface ToolContext {
@@ -38,11 +43,14 @@ export interface ToolDefinition<S extends ZodRawShape = ZodRawShape> {
  * The registry.
  *
  * Populated per the build order: stage 1 adds list_servers, get_server and
- * list_sites; stage 2 the remaining read tools; stage 3 the five write tools.
+ * list_sites; stage 2 the remaining read tools — get_server_status, get_site,
+ * get_deployments and get_deployment_script, which completes the read surface;
+ * stage 3 the five write tools.
  *
  * Order is the order a model sees in tools/list, so it reads as the path a caller
  * actually walks: servers, then one server, then that one server's health, then
- * that server's sites, then one site. Each detail tool sits next to the list tool
+ * that server's sites, then one site, then what has been deployed to a site and
+ * what will run the next time one is. Each detail tool sits next to the list tool
  * that hands out the id it takes.
  */
 export const tools: ToolDefinition[] = [
@@ -51,4 +59,6 @@ export const tools: ToolDefinition[] = [
   getServerStatusTool,
   listSitesTool,
   getSiteTool,
+  getDeploymentsTool,
+  getDeploymentScriptTool,
 ];
