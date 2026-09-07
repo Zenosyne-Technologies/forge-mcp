@@ -201,6 +201,28 @@ omissions already there. 43 new tests; 466 pass, 4 skipped. Documented in
 `.docs/handbooks/developer/read-tools.md` and `.docs/handbooks/admin/read-tools.md`.
 `get_deployments` and `get_deployment_script` remain to close stage 2.
 
+**Result (issue #10), closing stage 2:** the last two read tools land — `get_deployments` and
+`get_deployment_script` (`src/tools/sites.ts`), bringing the registry to seven and completing the
+read surface. `get_deployments` reads `GET /orgs/{org}/servers/{server}/sites/{site}/deployments`,
+paginated like every other listing, and projects each row's `status` (Forge's closed seven-value
+`DeploymentStatus` enum), `type`, a nested `commit { hash, author, message, branch }` and four
+timestamps. `DeploymentAttributes` carried the same fault `SiteAttributes` did in issue #7 — three
+invented flat fields (`commit_hash`, `commit_message`, `commit_author`) standing in for the real
+nested `commit` object — corrected against the published `DeploymentResource` schema and confirmed
+against live data. `get_deployment_script` reads `GET …/deployments/script` and is the one value in
+this registry that keeps its line breaks: a second neutralisation function,
+`neutraliseUpstreamScript` (`src/upstream-text.ts`), is built from the same allowlist as
+`neutraliseUpstreamText` but spares exactly `SCRIPT_SPARED` — space, tab, line feed — because a
+script's indentation and line structure are its content, and a first attempt that spared only the
+newline still corrupted heredocs, Python bodies and `awk -F'  '` by collapsing horizontal
+whitespace. A sweep of all 1,114,112 code points confirms the two functions agree everywhere else.
+When the returned script is not byte-for-byte what Forge sent — for any reason other than the
+20,000-character cap — `altered` is set and `notes` says so by name, the same "a changed result
+must never read as a faithful one" principle the truncation note already enforces. 82 new tests;
+548 pass, 4 skipped. Documented in `.docs/handbooks/developer/read-tools.md` and
+`.docs/handbooks/admin/read-tools.md`. Stage 2 is complete: the read surface is now all seven
+tools; the five write tools of stage 3 remain.
+
 ## Testing
 
 Vitest, with `fetch` mocked against fixtures captured read-only from the live API. One opt-in

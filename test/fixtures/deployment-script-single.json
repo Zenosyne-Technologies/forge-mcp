@@ -1,0 +1,13 @@
+{
+  "data": {
+    "id": "5001",
+    "type": "deploymentScripts",
+    "attributes": {
+      "content": "cd /home/forge/zenosyne.tech\ngit pull origin $FORGE_SITE_BRANCH\n\ncomposer install --no-interaction --prefer-dist --optimize-autoloader --no-dev\n\n# Rebuild the front end\nnpm ci\nnpm run build\n\n( flock -w 10 9 || exit 1\n    echo 'Restarting FPM...'; sudo -S service $FORGE_PHP_FPM reload ) 9>/tmp/fpmlock\n\nif [ -f artisan ]; then\n    php artisan migrate --force\n    php artisan queue:restart\nfi",
+      "auto_source": true
+    },
+    "links": {
+      "self": "https://forge.laravel.com/api/orgs/zenosyne-ltd/servers/1001/sites/5001/deployments/script"
+    }
+  }
+}

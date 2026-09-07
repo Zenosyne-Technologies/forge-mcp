@@ -4,11 +4,15 @@
  * Hand-written rather than generated: only twelve tools are exposed, and a generated
  * surface for all 159 API paths would be far larger than anything consumed here.
  *
- * `ServerAttributes` and `SiteAttributes` are transcribed from the published
- * `ServerResource` / `SiteResource` schemas rather than guessed — an earlier
- * hand-written `SiteAttributes` named three fields (`directory`,
- * `repository_branch`, `repository_provider`) that the API does not have, which is
- * exactly the kind of drift a type is supposed to prevent. Fields the schema marks
+ * `ServerAttributes`, `SiteAttributes` and `DeploymentAttributes` are transcribed
+ * from the published `ServerResource` / `SiteResource` / `DeploymentResource`
+ * schemas rather than guessed — an earlier hand-written `SiteAttributes` named three
+ * fields (`directory`, `repository_branch`, `repository_provider`) that the API does
+ * not have, and `DeploymentAttributes` carried the identical fault, flattening the
+ * nested `commit` object into `commit_hash` / `commit_message` / `commit_author`.
+ * Both are exactly the drift a type is supposed to prevent, and neither was found by
+ * a compiler: a hand-written type is only a claim, so it is checked against the
+ * schema and then against a recorded fixture. Fields the schema marks
  * required are non-optional here; the schema's nullability is preserved verbatim.
  *
  * These types describe what Forge SAYS it sends. Nothing here is a runtime
@@ -167,16 +171,57 @@ export interface SiteAttributes {
   updated_at: string | null;
 }
 
+/**
+ * The nested commit object — not the flat `commit_hash` / `commit_message` /
+ * `commit_author` the scaffold assumed, which the API has never had. The same drift
+ * `SiteAttributes` carried, in the same shape: three invented flat fields standing in
+ * for one real nested object. Every member is required and every member is nullable,
+ * exactly as `DeploymentResource` declares it — a deployment queued before its repo
+ * was reachable has a `commit` whose four values are all null.
+ */
+export interface DeploymentCommit {
+  hash: string | null;
+  author: string | null;
+  message: string | null;
+  branch: string | null;
+}
+
+/** Forge's `DeploymentStatus` enum, transcribed rather than widened to `string`. */
+export type DeploymentStatus =
+  | "cancelled"
+  | "deploying"
+  | "failed"
+  | "failed-build"
+  | "finished"
+  | "pending"
+  | "queued";
+
+/** Transcribed from `DeploymentResource.attributes`. */
 export interface DeploymentAttributes {
-  commit_hash: string | null;
-  commit_message: string | null;
-  commit_author: string | null;
-  status: string | null;
-  started_at: string | null;
-  ended_at: string | null;
+  commit: DeploymentCommit;
+  /** What triggered the deployment, as Forge labels it. */
+  type: string;
+  status: DeploymentStatus;
+  started_at: string;
+  ended_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Transcribed from `DeploymentScriptResource.attributes`.
+ *
+ * `content` is the one upstream value this server returns with its line breaks
+ * intact, and `auto_source` is not decoration: it says whether the site's `.env` is
+ * sourced into the script's environment, which changes what those lines DO.
+ */
+export interface DeploymentScriptAttributes {
+  content: string | null;
+  auto_source: boolean;
 }
 
 export type Organization = Resource<OrganizationAttributes>;
 export type Server = Resource<ServerAttributes>;
 export type Site = Resource<SiteAttributes>;
 export type Deployment = Resource<DeploymentAttributes>;
+export type DeploymentScript = Resource<DeploymentScriptAttributes>;
