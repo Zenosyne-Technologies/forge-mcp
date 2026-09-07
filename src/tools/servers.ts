@@ -89,11 +89,21 @@ function numericId(value: unknown): string | null {
 }
 
 /**
- * The health half of a server record — exactly the six fields Forge publishes that
- * answer "is this box working?", and nothing else.
+ * The health half of a server record — the server's id plus exactly the six health
+ * fields Forge publishes that answer "is this box working?", and nothing else.
  *
- * Every one of them is also in `ServerView`, and that is deliberate rather than a
- * shortfall: Forge's `ServerResource` carries no CPU, memory or load-average
+ * `id` is here because a health answer that cannot be attributed is a hazard: six
+ * health fields alone make two DIFFERENT servers emit a byte-identical result, and
+ * the argument that paired the answer to its subject survives only as long as the
+ * `tool_use` block does. An agent reading a condensed transcript could then attach
+ * "not ready" to the wrong box and reboot it. So the subject travels with the
+ * verdict. It is taken from `projectServer` — the id Forge ATTESTED in the response
+ * — not from the caller's `server_id`, so the result names the server Forge
+ * actually described rather than echoing back what was asked for; if the two ever
+ * disagree, the attested one is the truth.
+ *
+ * Every one of the seven is also in `ServerView`, and that is deliberate rather than
+ * a shortfall: Forge's `ServerResource` carries no CPU, memory or load-average
  * reading at all, so there is no richer health payload to fetch. `monitors` are
  * alerting THRESHOLDS, not measurements. A status tool that implied otherwise would
  * send an agent hunting for a metric this API stopped reporting.
@@ -104,6 +114,7 @@ function numericId(value: unknown): string | null {
  * suite against these two functions rather than against a comment.
  */
 export const SERVER_STATUS_FIELDS = [
+  "id",
   "connection_status",
   "is_ready",
   "db_status",
@@ -120,6 +131,8 @@ export type ServerStatusView = Pick<
 export function projectServerStatus(raw: unknown): ServerStatusView {
   const server = projectServer(raw);
   return {
+    // Forge-attested, via `projectServer`: never the caller's argument.
+    id: server.id,
     connection_status: server.connection_status,
     is_ready: server.is_ready,
     db_status: server.db_status,
@@ -197,7 +210,7 @@ export const getServerStatusTool: ToolDefinition = {
   name: "get_server_status",
   title: "Get server status",
   description:
-    "Answers one question about one server — is it healthy? — as the narrowest read available: connection_status, is_ready, db_status, redis_status, opcache_status and php_version, and nothing else. get_server returns these same six values inside the whole record, so this tool returns fewer fields, never more; prefer it for a health check and get_server when you need the rest. Forge no longer reports CPU, memory or load-average metrics, so no tool here can give you a load or CPU reading.",
+    "Answers one question about one server — is it healthy? — and returns only: id, connection_status, is_ready, db_status, redis_status, opcache_status, php_version. The id is Forge's own for the server it described; attribute the verdict to that, not to the id you asked for. get_server returns these same seven values in the whole record, so prefer this for a health check: fewer fields, never more. Forge no longer reports CPU, memory or load, so no tool here can give you a load or CPU reading.",
   inputSchema: {
     server_id: z
       .string()

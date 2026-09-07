@@ -1455,7 +1455,7 @@ describe("get_site — one site, addressed by its own id", () => {
  * failed on, so the claim is checked against the projections rather than trusted.
  */
 describe("get_server_status — the health fields, and only those", () => {
-  it("returns exactly the six fields the API actually provides", async () => {
+  it("returns exactly the seven fields the API actually provides", async () => {
     const forge = fakeFetch({ body: fixture("server-single") });
 
     const result = (await run(
@@ -1464,7 +1464,11 @@ describe("get_server_status — the health fields, and only those", () => {
       forge,
     )) as { server_status: ServerStatusView };
 
+    // Seven, not six: `id` names the subject of the verdict. Everything else is a
+    // health field, and `id` is a field the API provides — so this stays inside the
+    // "only what Forge actually publishes" rule the next test enforces.
     expect(result.server_status).toEqual({
+      id: "1001",
       connection_status: "connected",
       is_ready: true,
       db_status: "installed",
@@ -1475,9 +1479,77 @@ describe("get_server_status — the health fields, and only those", () => {
     // Exactly those keys, in the order the projection names them — nothing else
     // rides along, and the exported list cannot drift from what is returned.
     expect(Object.keys(result.server_status)).toEqual([...SERVER_STATUS_FIELDS]);
+    expect(SERVER_STATUS_FIELDS).toHaveLength(7);
   });
 
-  it("carries no metric Forge does not report, and no field beyond the six", async () => {
+  it("tells two different servers apart, so a verdict cannot be misattributed", async () => {
+    // The failure this pins: with health fields alone, two DIFFERENT servers emit a
+    // byte-identical result. The pairing then lives only in the tool_use arguments,
+    // and a condensed transcript can lose it — at which point "not ready" attaches
+    // to whichever server the reader guesses, and reboot_server takes the guess.
+    const one = (await run(
+      "get_server_status",
+      { server_id: "1001" },
+      fakeFetch({ body: fixture("server-single") }),
+    )) as { server_status: ServerStatusView };
+    const other = (await run(
+      "get_server_status",
+      { server_id: "1002" },
+      fakeFetch({
+        body: {
+          data: {
+            // A different server, identical health: same connection, same readiness,
+            // same services, same PHP. Only the identity differs.
+            id: "1002",
+            type: "servers",
+            attributes: {
+              name: "app-prod-02",
+              ip_address: "203.0.113.77",
+              connection_status: "connected",
+              is_ready: true,
+              db_status: "installed",
+              redis_status: "installed",
+              opcache_status: "enabled",
+              php_version: "php84",
+            },
+          },
+        },
+      }),
+    )) as { server_status: ServerStatusView };
+
+    expect(one.server_status.id).toBe("1001");
+    expect(other.server_status.id).toBe("1002");
+    expect(JSON.stringify(one.server_status)).not.toBe(
+      JSON.stringify(other.server_status),
+    );
+  });
+
+  it("reports the id Forge attested, not the one the caller asked for", async () => {
+    // If the two ever disagree, the attested one is the truth: the result must
+    // describe the server Forge described, not echo the argument back and make a
+    // mismatch invisible.
+    const forge = fakeFetch({
+      body: {
+        data: {
+          id: "2002",
+          type: "servers",
+          attributes: { connection_status: "connected", is_ready: true },
+        },
+      },
+    });
+
+    const result = (await run(
+      "get_server_status",
+      { server_id: "1001" },
+      forge,
+    )) as { server_status: ServerStatusView };
+
+    expect(forge.calls[0]?.url).toBe(`${API}/orgs/${ORG}/servers/1001`);
+    expect(result.server_status.id).toBe("2002");
+    expect(result.server_status.id).not.toBe("1001");
+  });
+
+  it("carries no metric Forge does not report, and no field beyond the seven", async () => {
     const forge = fakeFetch({ body: fixture("server-single") });
 
     const result = (await run(

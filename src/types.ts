@@ -30,13 +30,20 @@ export interface Envelope<T> {
  * `RedirectRuleResource` objects — a second, larger payload surface whose every
  * value is written by whoever owns the Forge account.
  *
- * It is typed `unknown[]` on purpose, and that is not laziness. No tool reads it,
- * so no tool needs its shape; giving it one would be an invitation to project it
- * generically, which is the single thing that must not happen to a payload this
- * server has never whitelisted field by field. `included` is declared here only so
- * that a reader of this file knows the key exists and knows it is deliberately
- * dropped — an undeclared key looks like an oversight, a declared and unread one
- * is a decision.
+ * It is typed `unknown[]` on purpose, and that is not laziness. Be precise about
+ * what the type buys, though: it blocks reading INTO the side-load — an element
+ * access such as `included.map((r) => r.attributes)` fails typecheck, so no tool can
+ * quietly start projecting a payload this server has never whitelisted field by
+ * field. It does NOT stop a wholesale echo: `included: response?.included` typechecks
+ * clean. Nothing but the tests prevents that, and specifically these two, both in
+ * `test/tools.test.ts` under "get_site — one site, addressed by its own id":
+ * "never copies the included side-load out of a recorded response" and
+ * "keeps hostile content in included out of the agent's context". They are the
+ * containment; weakening or deleting them removes it, and the type will not notice.
+ *
+ * `included` is declared here only so that a reader of this file knows the key
+ * exists and knows it is deliberately dropped — an undeclared key looks like an
+ * oversight, a declared and unread one is a decision.
  */
 export interface CompoundEnvelope<T> {
   data: T;
