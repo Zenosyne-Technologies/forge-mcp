@@ -6,7 +6,7 @@ summary: The product handbooks, split by the audience that reads them — develo
 keywords: [index, handbooks, developer, user, admin, audience, product]
 level: project
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 ---
 
 # `.docs/handbooks/`
@@ -21,6 +21,6 @@ The `sources` key names the code paths a page documents. A discovery pass is MAN
 
 | item | what it covers | status | updated |
 |---|---|---|---|
-| [developer/](developer/index.md) | The software logic, for someone building on it — purpose, the WHY behind nuanced behavior, and how each unit connects to the others. | active | 2026-09-02 |
+| [developer/](developer/index.md) | The software logic, for someone building on it — purpose, the WHY behind nuanced behavior, and how each unit connects to the others. | active | 2026-09-07 |
 | [user/](user/index.md) | What the product does and what to be aware of while using it, in plain language, structured the way a layman would search. | active | 2026-09-02 |
-| [admin/](admin/index.md) | Operating and configuring the product — the same plain language, aimed at whoever runs it. | active | 2026-09-02 |
+| [admin/](admin/index.md) | Operating and configuring the product — the same plain language, aimed at whoever runs it. | active | 2026-09-07 |

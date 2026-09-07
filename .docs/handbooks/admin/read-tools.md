@@ -2,8 +2,8 @@
 doc: Using the read-only tools
 type: handbook
 status: active
-summary: What list_servers, get_server and list_sites return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, which fields never appear on purpose, and why a name or domain can render slightly differently than it does in the Forge dashboard.
-keywords: [list_servers, get_server, list_sites, pagination, cursor, page_size, has_more, next_cursor, annotations, readOnlyHint, emoji, invisible characters]
+summary: What list_servers, get_server, get_server_status, list_sites and get_site return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, which fields and which related records never appear on purpose, and why a name or domain can render slightly differently than it does in the Forge dashboard.
+keywords: [list_servers, get_server, get_server_status, list_sites, get_site, pagination, cursor, page_size, has_more, next_cursor, annotations, readOnlyHint, emoji, invisible characters, server health, CPU, load average]
 level: project
 audience: admin
 module: read tools
@@ -16,22 +16,24 @@ related:
   - "[[configuration]]"
   - "[[error-messages]]"
 created: 2026-09-03
-updated: 2026-09-03
+updated: 2026-09-07
 ---
 
 # Using the read-only tools
 
-## The three tools
+## The five tools
 
 - **`list_servers`** — every Forge server in your organization, one page per call: id, name, provider, region, both IP addresses, SSH port, PHP versions, database type, timezone, readiness and connection status, and database/Redis/OPcache status.
 - **`get_server`** — the same information for one server you already have an id for. It returns exactly what `list_servers` returns for that server, nothing more — reach for it when you already hold an id, and for `list_servers` when you need to find one or see several at once.
+- **`get_server_status`** — a shorter health-only answer for one server: is it connected, is it ready, and is the database, Redis and OPcache each up — plus the PHP version running there. It is the same seven values `get_server` already includes, never more; reach for it when the only question is "is this server healthy?" and the rest of `get_server`'s fields would be unused. **Forge does not report CPU, memory or load-average figures at all**, so this tool — and no other tool here — can answer a "how loaded is this server?" question; "healthy" here means connected and ready, not "under light load."
 - **`list_sites`** — the sites on one server, one page per call: id, domain, URL, app type, repository provider/branch, and deployment status. Get the server id from `list_servers` first.
+- **`get_site`** — one site by its own site id, with no server id needed. Use it when you hold a site id and don't know (or don't need to know) which server hosts it; it returns exactly what `list_sites` returns for that site, nothing more.
 
-All three only read. None can change a server, deploy a site, or touch a deployment script.
+All five only read. None can change a server, deploy a site, or touch a deployment script.
 
 ## What the annotations mean for your client
 
-Every one of these three tools is marked `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. An MCP client that gates tool calls — auto-approving safe ones, asking before a risky one, deciding whether a retry after a timeout is safe — reads these three flags rather than needing a hand-maintained list of which forge-mcp tools are safe. If your client supports policy based on these annotations, these three (and only these three, at this stage of the project) qualify for the least-restrictive tier: calling one twice in a row is exactly as safe as calling it once, and nothing about your Forge account changes as a result.
+Every one of these five tools is marked `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. An MCP client that gates tool calls — auto-approving safe ones, asking before a risky one, deciding whether a retry after a timeout is safe — reads these flags rather than needing a hand-maintained list of which forge-mcp tools are safe. If your client supports policy based on these annotations, these five (and only these five, at this stage of the project) qualify for the least-restrictive tier: calling one twice in a row is exactly as safe as calling it once, and nothing about your Forge account changes as a result.
 
 ## Paging through results
 
@@ -52,6 +54,8 @@ The one combination worth knowing by name: **`has_more: true` with `next_cursor:
 ## What you will never see in a tool result
 
 By design, no read tool ever returns: server credential material, the deploy-trigger URL for a site (a secret — anyone holding it can trigger a deployment), the raw deployment script, or shared-path link targets. This is not an oversight to work around; it is the same withholding principle [[error-messages]] describes for the `[redacted]` token substitution — data that would let an agent (or anyone reading its output) act destructively is kept out of read results entirely, not merely warned about.
+
+`get_site` withholds something further: Forge's own answer for one site also carries a bundle of *related* records alongside it — the server that hosts the site (including its credential key material), any tags, recent deployments, and firewall/redirect rules. None of that bundle is returned, at all — not summarised, not partially. `get_site` gives you the one site record and nothing else attached to it; use `list_servers`/`get_server`, or the relevant future tool, for anything about the site's server, tags, deployments or rules.
 
 Every successful result also opens with a standing `data_notice` field. That is not an error indicator — it appears on every normal result and exists to tell whatever is reading the output that the record values that follow (a server name, a site domain, a git branch) were written by whoever administers your Forge account, not by this server, and should not be treated as instructions.
 
