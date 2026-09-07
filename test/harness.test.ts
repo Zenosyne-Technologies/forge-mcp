@@ -634,7 +634,7 @@ describe("no fixture carries a credential", () => {
   const ALLOWED_QUERY_SECRETS: { value: string; why: string }[] = [
     {
       value: "deploytoken",
-      why: "The deploy-trigger placeholder in sites-page-1.json. `deployment_url` is recorded so the site tools can be shown never to copy it into a tool result; the value itself is a word, not a token.",
+      why: "The deploy-trigger placeholder in both sites-page-1.json and site-single.json. `deployment_url` is recorded in each so the list and single-site tools can be shown never to copy it into a tool result; the value itself is a word, not a token.",
     },
     {
       value: "deploytoken2",

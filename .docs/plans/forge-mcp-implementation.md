@@ -6,7 +6,7 @@ summary: The clean-room build of forge-mcp — an MCP server exposing Laravel Fo
 keywords: [mcp, laravel-forge, api, typescript, tools, deployment, organization-scoped, stdio]
 level: planning
 created: 2026-09-02
-updated: 2026-09-03
+updated: 2026-09-07
 ---
 
 # forge-mcp — implementation plan
@@ -182,6 +182,24 @@ import of a removed symbol alive and green. The threat model is stated deliberat
 guards catch an honest mistake, not a determined test author who opens a socket directly.
 Documented in `.docs/handbooks/developer/testing-strategy.md`; the mechanical reference lives in
 `test/README.md`. Stage 1 is complete.
+
+**Result (issue #9), stage 2 under way:** the first two of stage 2's remaining read tools land —
+`get_server_status` and `get_site` (`src/tools/servers.ts`, `src/tools/sites.ts`), bringing the
+registry to five. `get_server_status` reads the same `GET /orgs/{org}/servers/{server}` endpoint
+`get_server` reads and returns `ServerStatusView`, a `Pick<ServerView, …>` of seven fields —
+`id`, `connection_status`, `is_ready`, `db_status`, `redis_status`, `opcache_status`,
+`php_version` — so "no more than `get_server`" is enforced by the compiler, not only claimed in
+the description; `id` is read from Forge's own response rather than the caller's argument, so two
+different servers cannot produce a byte-identical result. `get_site` reads
+`GET /orgs/{org}/sites/{site}`, resolving a site from its own id alone with no server id needed.
+That endpoint answers with a JSON:API compound document (`data` plus an `included` array that can
+carry a server, tags, deployments and rules); `included` is dropped entirely; nothing reads it, so
+nothing has to filter it. `CompoundEnvelope`'s `included: unknown[]` blocks reading a field out of
+it but not a wholesale pass-through, so two tests in `test/tools.test.ts` are the actual
+containment — asserted in `.docs/handbooks/developer/read-tools.md` alongside the six field-level
+omissions already there. 43 new tests; 466 pass, 4 skipped. Documented in
+`.docs/handbooks/developer/read-tools.md` and `.docs/handbooks/admin/read-tools.md`.
+`get_deployments` and `get_deployment_script` remain to close stage 2.
 
 ## Testing
 

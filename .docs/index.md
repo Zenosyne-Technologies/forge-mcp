@@ -6,7 +6,7 @@ summary: The root of this project's documentation estate — every document is r
 keywords: [index, documentation, navigation, crawl, search]
 level: project
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 ---
 
 # `.docs/` — documentation index
@@ -25,12 +25,12 @@ The four the documentation agent writes, so nobody has to guess: an **architectu
 
 | item | what it covers | status | updated |
 |---|---|---|---|
-| [plans/](plans/index.md) | Decided work not yet finished — milestone and implementation plans, and the decisions inside them. | active | 2026-09-02 |
+| [plans/](plans/index.md) | Decided work not yet finished — milestone and implementation plans, and the decisions inside them. | active | 2026-09-07 |
 | [researches/](researches/index.md) | What an investigation established — plan-validation and solution-research findings, with their evidence. | active | 2026-09-02 |
 | [refactor/](refactor/index.md) | Known technical debt and the shape of the cleanup it calls for. | active | 2026-09-02 |
 | [future/](future/index.md) | Ideas deliberately deferred — not scheduled, not forgotten. | active | 2026-09-02 |
 | [information/](information/index.md) | Durable rules, constraints and warnings agents are obliged to obey — severity-tagged and relevance-routed. | active | 2026-09-02 |
-| [handbooks/](handbooks/index.md) | The product as it currently is, split by the audience that reads it — developer, user, admin, each its own index. | active | 2026-09-02 |
+| [handbooks/](handbooks/index.md) | The product as it currently is, split by the audience that reads it — developer, user, admin, each its own index. | active | 2026-09-07 |
 | [release-notes/](release-notes/index.md) | One document per released version — the same text as that version's annotated git tag, kept where the crawl can reach it. | active | 2026-09-02 |
 
 `project-management/` and `reports/` are project RECORD, not documentation: machine-shaped, owned by the project's tracker and reporting workflows. The crawl does not descend into them, and they are not indexed here.

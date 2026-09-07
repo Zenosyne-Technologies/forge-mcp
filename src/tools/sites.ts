@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ListEnvelope, Site } from "../types.js";
+import type { CompoundEnvelope, ListEnvelope, Site } from "../types.js";
 import type { ToolContext, ToolDefinition } from "./index.js";
 import {
   flag,
@@ -9,9 +9,11 @@ import {
   record,
   requireList,
   requirePathSegment,
+  requireResource,
   text,
   textList,
   url,
+  withDataNotice,
   withPageQuery,
 } from "./common.js";
 
@@ -127,5 +129,52 @@ export const listSitesTool: ToolDefinition = {
     // alias and a branch are the account owner's text, and this is the only thing
     // on an ordinary page that says so.
     return pagedList("sites", projected, page, response?.meta);
+  },
+};
+
+export const getSiteTool: ToolDefinition = {
+  name: "get_site",
+  title: "Get site",
+  description:
+    "Fetches one Forge site by its site id alone — no server id needed, so it answers when all you hold is a site id and do not know which server hosts it. It returns exactly the row list_sites returns for that site: the same fields, no additional detail, and none of the related server, tag, deployment or rule records Forge side-loads next to it. Use list_sites to find a site id, or to see what one server serves.",
+  inputSchema: {
+    site_id: z
+      .string()
+      .describe("Forge site id, exactly as returned by list_sites."),
+  },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+  },
+  handler: async (args: Record<string, unknown>, ctx: ToolContext) => {
+    const siteId = requirePathSegment(args["site_id"], "site_id");
+    const org = await ctx.org.slug();
+
+    // Site-scoped, not server-scoped: Forge resolves a site id within the
+    // organization, so this tool needs no server id and cannot be given one.
+    const response = await ctx.client.request<CompoundEnvelope<Site>>(
+      "GET",
+      `/orgs/${org}/sites/${siteId}`,
+    );
+
+    /*
+     * `included` is read by nothing, here or anywhere.
+     *
+     * This is the one endpoint so far that answers with a JSON:API COMPOUND
+     * document: `data` plus an `included` array that may carry server, tag,
+     * deployment, security-rule and redirect-rule resources — a whole second
+     * payload surface, every value of it written by whoever owns the Forge
+     * account, and none of it whitelisted by anything in this file. The tool's
+     * contract is one site, so the side-load is dropped in the only way that
+     * cannot rot: nothing copies it. A generic pass-through of related resources
+     * would be exactly the "whatever shape arrived" projection the whitelist
+     * exists to refuse, and it would hand an attacker a field-cap-free channel
+     * into the agent's context. Adding one later means whitelisting each resource
+     * field by field through `text`/`flag`/`whole`, in a reviewable diff.
+     */
+    return withDataNotice({
+      site: projectSite(requireResource(response?.data, "site")),
+    });
   },
 };

@@ -162,7 +162,7 @@ export function requirePathSegment(raw: unknown, field: string): string {
 
   if (!value || !isUsableInPath(value)) {
     throw new ForgeError(
-      `${field} is missing or is not a usable Forge identifier. It is placed directly into the Forge API path, so it must be the id Forge issued for the resource — letters, digits, dots, hyphens and underscores only, with no slashes, scheme or ".." segments. The value supplied is not repeated here; read a valid id from list_servers.`,
+      `${field} is missing or is not a usable Forge identifier. It is placed directly into the Forge API path, so it must be the id Forge issued for the resource — letters, digits, dots, hyphens and underscores only, with no slashes, scheme or ".." segments. The value supplied is not repeated here; read a valid id from list_servers or list_sites.`,
     );
   }
   return value;

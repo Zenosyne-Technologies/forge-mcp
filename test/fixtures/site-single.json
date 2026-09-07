@@ -1,0 +1,98 @@
+{
+  "data": {
+    "id": "5001",
+    "type": "sites",
+    "attributes": {
+      "name": "zenosyne.tech",
+      "status": "installed",
+      "url": "https://zenosyne.tech",
+      "user": "forge",
+      "https": true,
+      "web_directory": "/public",
+      "root_directory": "/home/forge/zenosyne.tech",
+      "aliases": ["www.zenosyne.tech"],
+      "php_version": "php84",
+      "deployment_status": "finished",
+      "quick_deploy": true,
+      "isolated": false,
+      "shared_paths": { "storage": "/home/forge/zenosyne.tech/storage" },
+      "repository": {
+        "provider": "github",
+        "url": "Zenosyne-Technologies/site",
+        "branch": "main",
+        "status": "installed"
+      },
+      "database": "zenosyne_prod",
+      "maintenance_mode": { "enabled": false, "status": null },
+      "zero_downtime_deployments": true,
+      "deployment_retention": 5,
+      "deployment_script": "cd /home/forge/zenosyne.tech && git pull origin main",
+      "wildcards": false,
+      "app_type": "laravel",
+      "uses_envoyer": false,
+      "deployment_url": "https://forge.laravel.com/servers/1001/sites/5001/deploy/http?token=deploytoken",
+      "healthcheck_url": "https://zenosyne.tech/up",
+      "created_at": "2025-07-29T10:00:00Z",
+      "updated_at": "2025-08-05T10:00:00Z"
+    },
+    "relationships": {
+      "server": { "data": { "id": "1001", "type": "servers" } },
+      "tags": { "data": [{ "id": "31", "type": "tags" }] },
+      "latestDeployment": { "data": { "id": "9001", "type": "deployments" } },
+      "securityRules": { "data": [] },
+      "redirectRules": { "data": [] }
+    },
+    "links": { "self": "https://forge.laravel.com/api/orgs/zenosyne-ltd/sites/5001" }
+  },
+  "included": [
+    {
+      "id": "1001",
+      "type": "servers",
+      "attributes": {
+        "id": 1001,
+        "credential_id": 7,
+        "name": "app-prod-01",
+        "slug": "app-prod-01",
+        "type": "app",
+        "ubuntu_version": "24.04",
+        "ssh_port": 2222,
+        "provider": "digitalocean",
+        "identifier": "do-4711",
+        "size": "s-2vcpu-4gb",
+        "region": "ams3",
+        "php_version": "php84",
+        "php_cli_version": "php84",
+        "opcache_status": "enabled",
+        "database_type": "mysql8",
+        "db_status": "installed",
+        "redis_status": "installed",
+        "ip_address": "203.0.113.10",
+        "private_ip_address": "10.114.0.4",
+        "revoked": false,
+        "created_at": "2025-07-29T09:00:00Z",
+        "updated_at": "2025-07-30T09:00:00Z",
+        "connection_status": "connected",
+        "timezone": "UTC",
+        "local_public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABexamplekeymaterial",
+        "is_ready": true
+      }
+    },
+    {
+      "id": "31",
+      "type": "tags",
+      "attributes": { "name": "production", "colour": "#ff0000" }
+    },
+    {
+      "id": "9001",
+      "type": "deployments",
+      "attributes": {
+        "commit_hash": "a1b2c3d",
+        "commit_message": "Bump the queue timeout",
+        "commit_author": "Ada Lovelace",
+        "status": "finished",
+        "started_at": "2025-08-05T09:58:00Z",
+        "ended_at": "2025-08-05T10:00:00Z"
+      }
+    }
+  ]
+}

@@ -6,7 +6,7 @@ summary: Plans for decided work that is not yet finished — milestone plans, im
 keywords: [index, plans, milestone, implementation, design]
 level: planning
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 ---
 
 # `.docs/plans/`
@@ -19,4 +19,4 @@ Every document here carries a YAML header and a row in the table below; nothing 
 
 | item | what it covers | status | updated |
 |---|---|---|---|
-| [forge-mcp implementation plan](forge-mcp-implementation.md) | The clean-room build of forge-mcp — an MCP server exposing Laravel Forge through twelve curated tools on the organization-scoped Forge API, sequenced in four stages. | active | 2026-09-03 |
+| [forge-mcp implementation plan](forge-mcp-implementation.md) | The clean-room build of forge-mcp — an MCP server exposing Laravel Forge through twelve curated tools on the organization-scoped Forge API, sequenced in four stages. | active | 2026-09-07 |

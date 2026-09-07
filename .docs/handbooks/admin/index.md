@@ -6,7 +6,7 @@ summary: The table of contents for one handbook audience — every page in this 
 keywords: [handbook, index, pages, audience]
 level: project
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-07
 ---
 
 # Handbook Index
@@ -21,4 +21,4 @@ updated: 2026-09-02
 |---|---|---|---|---|
 | [configuration](configuration.md) | `src/org.ts`, `src/client.ts` | The environment variables forge-mcp reads, what happens with one Forge organization versus several, and what to do about each organization-resolution error message. | active | 2026-09-02 |
 | [error-messages](error-messages.md) | `src/errors.ts` | What a failed tool call's message means when it quotes Forge's own words — the "Forge reported this text..." label, why it appears, and why a secret you set never shows up as itself. | active | 2026-09-02 |
-| [read-tools](read-tools.md) | `src/tools/servers.ts`, `src/tools/sites.ts`, `src/tools/common.ts`, `src/upstream-text.ts` | What list_servers, get_server and list_sites return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, which fields never appear on purpose, and why a name or domain can render slightly differently than it does in the Forge dashboard. | active | 2026-09-03 |
+| [read-tools](read-tools.md) | `src/tools/servers.ts`, `src/tools/sites.ts`, `src/tools/common.ts`, `src/upstream-text.ts` | What list_servers, get_server, get_server_status, list_sites and get_site return, how to page through results with cursor and page_size, what the read-only annotations mean for an agent client, which fields and which related records never appear on purpose, and why a name or domain can render slightly differently than it does in the Forge dashboard. | active | 2026-09-07 |

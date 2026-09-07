@@ -88,6 +88,60 @@ function numericId(value: unknown): string | null {
   return id === null ? null : String(id);
 }
 
+/**
+ * The health half of a server record — the server's id plus exactly the six health
+ * fields Forge publishes that answer "is this box working?", and nothing else.
+ *
+ * `id` is here because a health answer that cannot be attributed is a hazard: six
+ * health fields alone make two DIFFERENT servers emit a byte-identical result, and
+ * the argument that paired the answer to its subject survives only as long as the
+ * `tool_use` block does. An agent reading a condensed transcript could then attach
+ * "not ready" to the wrong box and reboot it. So the subject travels with the
+ * verdict. It is taken from `projectServer` — the id Forge ATTESTED in the response
+ * — not from the caller's `server_id`, so the result names the server Forge
+ * actually described rather than echoing back what was asked for; if the two ever
+ * disagree, the attested one is the truth.
+ *
+ * Every one of the seven is also in `ServerView`, and that is deliberate rather than
+ * a shortfall: Forge's `ServerResource` carries no CPU, memory or load-average
+ * reading at all, so there is no richer health payload to fetch. `monitors` are
+ * alerting THRESHOLDS, not measurements. A status tool that implied otherwise would
+ * send an agent hunting for a metric this API stopped reporting.
+ *
+ * So the projection is derived from `projectServer` rather than re-read from the
+ * attributes bag. That makes "the same values get_server returns, fewer of them"
+ * true by construction — the claim the tool's description makes, checked by the
+ * suite against these two functions rather than against a comment.
+ */
+export const SERVER_STATUS_FIELDS = [
+  "id",
+  "connection_status",
+  "is_ready",
+  "db_status",
+  "redis_status",
+  "opcache_status",
+  "php_version",
+] as const;
+
+export type ServerStatusView = Pick<
+  ServerView,
+  (typeof SERVER_STATUS_FIELDS)[number]
+>;
+
+export function projectServerStatus(raw: unknown): ServerStatusView {
+  const server = projectServer(raw);
+  return {
+    // Forge-attested, via `projectServer`: never the caller's argument.
+    id: server.id,
+    connection_status: server.connection_status,
+    is_ready: server.is_ready,
+    db_status: server.db_status,
+    redis_status: server.redis_status,
+    opcache_status: server.opcache_status,
+    php_version: server.php_version,
+  };
+}
+
 export const listServersTool: ToolDefinition = {
   name: "list_servers",
   title: "List servers",
@@ -148,6 +202,41 @@ export const getServerTool: ToolDefinition = {
     // rendered as a server whose every field happens to be null.
     return withDataNotice({
       server: projectServer(requireResource(response?.data, "server")),
+    });
+  },
+};
+
+export const getServerStatusTool: ToolDefinition = {
+  name: "get_server_status",
+  title: "Get server status",
+  description:
+    "Answers one question about one server — is it healthy? — and returns only: id, connection_status, is_ready, db_status, redis_status, opcache_status, php_version. The id is Forge's own for the server it described; attribute the verdict to that, not to the id you asked for. get_server returns these same seven values in the whole record, so prefer this for a health check: fewer fields, never more. Forge no longer reports CPU, memory or load, so no tool here can give you a load or CPU reading.",
+  inputSchema: {
+    server_id: z
+      .string()
+      .describe("Forge server id, exactly as returned by list_servers."),
+  },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+  },
+  handler: async (args: Record<string, unknown>, ctx: ToolContext) => {
+    const serverId = requirePathSegment(args["server_id"], "server_id");
+    const org = await ctx.org.slug();
+
+    // The same endpoint get_server reads. There is no status endpoint to call: the
+    // difference between the two tools is what is asked for and what comes back
+    // into the agent's context, not which route is hit.
+    const response = await ctx.client.request<Envelope<Server>>(
+      "GET",
+      `/orgs/${org}/servers/${serverId}`,
+    );
+
+    return withDataNotice({
+      server_status: projectServerStatus(
+        requireResource(response?.data, "server"),
+      ),
     });
   },
 };
