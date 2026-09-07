@@ -22,6 +22,28 @@ export interface Envelope<T> {
 }
 
 /**
+ * A single resource plus the JSON:API `included` side-load.
+ *
+ * `GET /orgs/{org}/sites/{site}` is the first endpoint here that answers with a
+ * COMPOUND document: alongside `data` it may carry an `included` array of
+ * `ServerResource`, `TagResource`, `DeploymentResource`, `SecurityRuleResource` and
+ * `RedirectRuleResource` objects — a second, larger payload surface whose every
+ * value is written by whoever owns the Forge account.
+ *
+ * It is typed `unknown[]` on purpose, and that is not laziness. No tool reads it,
+ * so no tool needs its shape; giving it one would be an invitation to project it
+ * generically, which is the single thing that must not happen to a payload this
+ * server has never whitelisted field by field. `included` is declared here only so
+ * that a reader of this file knows the key exists and knows it is deliberately
+ * dropped — an undeclared key looks like an oversight, a declared and unread one
+ * is a decision.
+ */
+export interface CompoundEnvelope<T> {
+  data: T;
+  included?: unknown[];
+}
+
+/**
  * Cursor pagination, as every Forge list endpoint returns it.
  *
  * `meta` and `links` are marked required by the published schema, but a type is a

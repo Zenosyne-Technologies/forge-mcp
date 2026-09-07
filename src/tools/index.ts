@@ -1,8 +1,12 @@
 import type { ZodRawShape } from "zod";
 import type { ForgeClient } from "../client.js";
 import type { OrganizationResolver } from "../org.js";
-import { getServerTool, listServersTool } from "./servers.js";
-import { listSitesTool } from "./sites.js";
+import {
+  getServerStatusTool,
+  getServerTool,
+  listServersTool,
+} from "./servers.js";
+import { getSiteTool, listSitesTool } from "./sites.js";
 
 /** Everything a tool handler is given. */
 export interface ToolContext {
@@ -37,10 +41,14 @@ export interface ToolDefinition<S extends ZodRawShape = ZodRawShape> {
  * list_sites; stage 2 the remaining read tools; stage 3 the five write tools.
  *
  * Order is the order a model sees in tools/list, so it reads as the path a caller
- * actually walks: servers, then one server, then that server's sites.
+ * actually walks: servers, then one server, then that one server's health, then
+ * that server's sites, then one site. Each detail tool sits next to the list tool
+ * that hands out the id it takes.
  */
 export const tools: ToolDefinition[] = [
   listServersTool,
   getServerTool,
+  getServerStatusTool,
   listSitesTool,
+  getSiteTool,
 ];

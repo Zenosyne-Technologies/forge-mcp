@@ -88,6 +88,47 @@ function numericId(value: unknown): string | null {
   return id === null ? null : String(id);
 }
 
+/**
+ * The health half of a server record — exactly the six fields Forge publishes that
+ * answer "is this box working?", and nothing else.
+ *
+ * Every one of them is also in `ServerView`, and that is deliberate rather than a
+ * shortfall: Forge's `ServerResource` carries no CPU, memory or load-average
+ * reading at all, so there is no richer health payload to fetch. `monitors` are
+ * alerting THRESHOLDS, not measurements. A status tool that implied otherwise would
+ * send an agent hunting for a metric this API stopped reporting.
+ *
+ * So the projection is derived from `projectServer` rather than re-read from the
+ * attributes bag. That makes "the same values get_server returns, fewer of them"
+ * true by construction — the claim the tool's description makes, checked by the
+ * suite against these two functions rather than against a comment.
+ */
+export const SERVER_STATUS_FIELDS = [
+  "connection_status",
+  "is_ready",
+  "db_status",
+  "redis_status",
+  "opcache_status",
+  "php_version",
+] as const;
+
+export type ServerStatusView = Pick<
+  ServerView,
+  (typeof SERVER_STATUS_FIELDS)[number]
+>;
+
+export function projectServerStatus(raw: unknown): ServerStatusView {
+  const server = projectServer(raw);
+  return {
+    connection_status: server.connection_status,
+    is_ready: server.is_ready,
+    db_status: server.db_status,
+    redis_status: server.redis_status,
+    opcache_status: server.opcache_status,
+    php_version: server.php_version,
+  };
+}
+
 export const listServersTool: ToolDefinition = {
   name: "list_servers",
   title: "List servers",
@@ -148,6 +189,41 @@ export const getServerTool: ToolDefinition = {
     // rendered as a server whose every field happens to be null.
     return withDataNotice({
       server: projectServer(requireResource(response?.data, "server")),
+    });
+  },
+};
+
+export const getServerStatusTool: ToolDefinition = {
+  name: "get_server_status",
+  title: "Get server status",
+  description:
+    "Answers one question about one server — is it healthy? — as the narrowest read available: connection_status, is_ready, db_status, redis_status, opcache_status and php_version, and nothing else. get_server returns these same six values inside the whole record, so this tool returns fewer fields, never more; prefer it for a health check and get_server when you need the rest. Forge no longer reports CPU, memory or load-average metrics, so no tool here can give you a load or CPU reading.",
+  inputSchema: {
+    server_id: z
+      .string()
+      .describe("Forge server id, exactly as returned by list_servers."),
+  },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+  },
+  handler: async (args: Record<string, unknown>, ctx: ToolContext) => {
+    const serverId = requirePathSegment(args["server_id"], "server_id");
+    const org = await ctx.org.slug();
+
+    // The same endpoint get_server reads. There is no status endpoint to call: the
+    // difference between the two tools is what is asked for and what comes back
+    // into the agent's context, not which route is hit.
+    const response = await ctx.client.request<Envelope<Server>>(
+      "GET",
+      `/orgs/${org}/servers/${serverId}`,
+    );
+
+    return withDataNotice({
+      server_status: projectServerStatus(
+        requireResource(response?.data, "server"),
+      ),
     });
   },
 };

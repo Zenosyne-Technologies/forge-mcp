@@ -80,16 +80,20 @@ function textOf(result: unknown): string {
 }
 
 describe("tools/list over the protocol", () => {
-  it("advertises all three read tools with readOnlyHint: true", async () => {
+  it("advertises every read tool with readOnlyHint: true", async () => {
     const client = await connectedClient(fakeFetch({ body: {} }));
 
     const listed = await client.listTools();
     const names = listed.tools.map((t) => t.name);
 
-    expect(names).toContain("list_servers");
-    expect(names).toContain("get_server");
-    expect(names).toContain("list_sites");
-    for (const name of ["list_servers", "get_server", "list_sites"]) {
+    expect(names).toEqual([
+      "list_servers",
+      "get_server",
+      "get_server_status",
+      "list_sites",
+      "get_site",
+    ]);
+    for (const name of names) {
       const advertised = listed.tools.find((t) => t.name === name);
       expect(advertised?.annotations?.readOnlyHint).toBe(true);
       expect(advertised?.annotations?.destructiveHint).toBe(false);
@@ -118,8 +122,26 @@ describe("tools/list over the protocol", () => {
       listed.tools.find((t) => t.name === "get_server")?.inputSchema.required,
     ).toEqual(["server_id"]);
     expect(
+      listed.tools.find((t) => t.name === "get_server_status")?.inputSchema
+        .required,
+    ).toEqual(["server_id"]);
+    expect(
       listed.tools.find((t) => t.name === "list_sites")?.inputSchema.required,
     ).toEqual(["server_id"]);
+  });
+
+  it("publishes site_id as get_site's only argument, required and alone", async () => {
+    const client = await connectedClient(fakeFetch({ body: {} }));
+
+    const listed = await client.listTools();
+    const getSite = listed.tools.find((t) => t.name === "get_site");
+
+    // On the wire, not merely in the registry: a server_id advertised here would
+    // make a model ask for one it does not need and may not have.
+    expect(Object.keys(getSite?.inputSchema.properties ?? {})).toEqual([
+      "site_id",
+    ]);
+    expect(getSite?.inputSchema.required).toEqual(["site_id"]);
   });
 });
 
@@ -140,6 +162,23 @@ describe("tools/call over the protocol", () => {
       "worker-prod-01",
     ]);
     expect(payload.next_cursor).toBe("eyJpZCI6MTAwMn0");
+  });
+
+  it("returns one site addressed by site id alone", async () => {
+    const forge = fakeFetch({ body: fixture("site-single") });
+    const client = await connectedClient(forge);
+
+    const result = await client.callTool({
+      name: "get_site",
+      arguments: { site_id: "5001" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(textOf(result)) as { site: { name: string } };
+    expect(payload.site.name).toBe("zenosyne.tech");
+    expect(forge.calls[0]?.url).toContain("/orgs/zenosyne-ltd/sites/5001");
+    // The compound document's side-load does not survive the trip to the client.
+    expect(textOf(result)).not.toContain("local_public_key");
   });
 
   it("returns the 404 message as an error result rather than a transport failure", async () => {
