@@ -125,10 +125,11 @@ export const RECORD_DATA_LABEL =
  *     reader needs is not data-versus-instructions in general but WHOSE instructions
  *     and to WHOM: they are the account owner's, addressed to bash, not to the model
  *     reading them.
- *  2. It is the only value this server returns whose line structure survives (see
- *     `neutraliseUpstreamScript`). Everything else arrives as one line and therefore
- *     cannot paint a heading, a rule, a table or an end-of-output banner. A script
- *     can, legitimately: `# === END OF DEPLOY ===` is an ordinary comment to write,
+ *  2. It is the only value this server returns whose line structure and whitespace
+ *     survive (see `neutraliseUpstreamScript`). Everything else arrives as one line
+ *     with its runs collapsed, and therefore cannot paint a heading, a rule, a table
+ *     or an end-of-output banner. A script can, legitimately, and now with its
+ *     columns intact: `# === END OF DEPLOY ===` is an ordinary comment to write,
  *     and is indistinguishable from the same line written to make a reader believe
  *     the tool's own output stopped there. The label says the frame, so a forged
  *     frame inside the content contradicts something that was already stated.
@@ -548,12 +549,25 @@ export const MAX_SCRIPT_CHARS = 20_000;
 
 /** A deployment script as it leaves this server, and what the bound cost it. */
 export interface ScriptText {
-  /** Line structure preserved, everything invisible removed; null if not a string. */
+  /**
+   * The script's own lines, indentation and in-string spacing, byte-for-byte, with
+   * everything invisible removed; null if Forge sent no string, or nothing visible.
+   */
   content: string | null;
   /** Characters the cap removed. 0 when the whole script is present. */
   omitted_characters: number;
   /** Lines in `content`, so a reader can check the script against its own tail. */
   line_count: number;
+  /**
+   * Whether what survives is NOT a byte-for-byte copy of what Forge sent, for any
+   * reason other than the length cap: an invisible character deleted, a denied
+   * character spaced, a CRLF folded, an NFC composition, an outer trim.
+   *
+   * This exists because the alternative is the failure the notes exist to prevent,
+   * one step further in: a result that was quietly changed reads as a faithful one.
+   * The cap already says so in words; alteration now does too.
+   */
+  altered: boolean;
 }
 
 /**
@@ -563,8 +577,9 @@ export interface ScriptText {
  * is left — with two script-specific decisions:
  *
  *  - `neutraliseUpstreamScript` rather than `neutraliseUpstreamText`, because the
- *    newlines are content here. Everything invisible is still removed, identically;
- *    the reasoning is in `src/upstream-text.ts` and not repeated here.
+ *    newlines — and the indentation, and the spacing inside a string literal — are
+ *    content here. Everything invisible is still removed, identically; the reasoning
+ *    is in `src/upstream-text.ts` and not repeated here.
  *  - A cut lands on a line boundary. `boundToLength` protects the character; this
  *    protects the LINE, because a script severed mid-command hands the reader
  *    `php artisan mig` — which is not a truncated command to the eye, it is a
@@ -575,14 +590,27 @@ export interface ScriptText {
  * `omitted_characters` is returned rather than a boolean because the caller says the
  * amount in words: a result that was silently shortened is a result that reads as
  * complete, which is the failure the notes in `pagedList` exist to prevent.
+ *
+ * `altered` is the same rule applied to the other way a copy can stop being one. The
+ * comparison is made HERE, against the exact string Forge sent, rather than inferred
+ * later from the content: only this function still holds both sides of it.
  */
 export function scriptText(value: unknown): ScriptText {
   if (typeof value !== "string") {
-    return { content: null, omitted_characters: 0, line_count: 0 };
+    return { content: null, omitted_characters: 0, line_count: 0, altered: false };
   }
 
   const visible = neutraliseUpstreamScript(value);
-  if (visible === "") return { content: null, omitted_characters: 0, line_count: 0 };
+  if (visible === "") {
+    // Forge sent something and nothing visible survived it: null is the honest
+    // content, and it is emphatically not what was sent.
+    return {
+      content: null,
+      omitted_characters: 0,
+      line_count: 0,
+      altered: value !== "",
+    };
+  }
 
   const bounded = boundToLength(visible, MAX_SCRIPT_CHARS);
   const lastBreak = bounded.lastIndexOf("\n");
@@ -597,6 +625,9 @@ export function scriptText(value: unknown): ScriptText {
     content,
     omitted_characters: visible.length - content.length,
     line_count: content.split("\n").length,
+    // Against `visible`, not `content`: what the CAP removed is `omitted_characters`
+    // and already has its own note, so this stays the answer to the other question.
+    altered: visible !== value,
   };
 }
 

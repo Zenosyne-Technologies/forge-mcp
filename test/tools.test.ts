@@ -110,6 +110,7 @@ interface ScriptResult {
     auto_source: boolean | null;
     line_count: number | null;
     truncated: boolean;
+    altered: boolean;
   };
   notes: string[];
 }
@@ -2099,8 +2100,11 @@ describe("get_deployment_script — the script the next deploy runs", () => {
     expect(lines).toContain("cd /home/forge/zenosyne.tech");
     expect(lines).toContain("git pull origin $FORGE_SITE_BRANCH");
     expect(lines).toContain("npm run build");
-    expect(lines).toContain("php artisan migrate --force");
-    expect(lines).toContain("php artisan queue:restart");
+    // Indented in the fixture, and indented here: the leading run of spaces is the
+    // artisan block's own, and a rule that trimmed it altered the script while
+    // reporting `truncated: false` and an empty `notes` beside it.
+    expect(lines).toContain("    php artisan migrate --force");
+    expect(lines).toContain("    php artisan queue:restart");
     // The failure this exists to prevent: the flat rule returns all of the above as
     // one line, where an operator cannot tell where one command ends.
     expect(lines.length).toBeGreaterThan(10);
@@ -2109,6 +2113,157 @@ describe("get_deployment_script — the script the next deploy runs", () => {
     );
     // Stated as well as shown, so a reader can check the text against the count.
     expect(result.deployment_script.line_count).toBe(lines.length);
+  });
+
+  it("returns the recorded script byte-for-byte, and says nothing was changed", async () => {
+    const recorded = fixture<{ data: { attributes: { content: string } } }>(
+      "deployment-script-single",
+    ).data.attributes.content;
+    const forge = fakeFetch({ body: fixture("deployment-script-single") });
+
+    const result = (await run(
+      "get_deployment_script",
+      SITE_ARGS,
+      forge,
+    )) as ScriptResult;
+
+    // The whole point of the tool: what an operator reads is what Forge sent.
+    expect(result.deployment_script.content).toBe(recorded);
+    expect(result.deployment_script.line_count).toBe(16);
+    expect(result.deployment_script.altered).toBe(false);
+    expect(result.deployment_script.truncated).toBe(false);
+    expect(result.notes).toEqual([]);
+  });
+
+  it("keeps a heredoc, a Python body and a column of spacing byte-identical", async () => {
+    // Four scripts where the whitespace is not decoration. The heredoc's indentation
+    // is the FILE being written; the Python body's indentation is its syntax; the
+    // spacing inside the echo is the output; and `awk -F'  '` is a different command
+    // from `awk -F' '` against the same input.
+    const CASES: Record<string, string> = {
+      "an nginx block written by a heredoc": [
+        "cat > /etc/nginx/sites/app.conf <<'NGINX'",
+        "server {",
+        "    listen 80;",
+        "    location / {",
+        "        try_files $uri /index.php;",
+        "    }",
+        "}",
+        "NGINX",
+      ].join("\n"),
+      "a python body whose indentation is syntax": [
+        "python3 - <<'PY'",
+        "if True:",
+        "    print('deployed')",
+        "PY",
+      ].join("\n"),
+      "aligned columns in an echo": 'echo "col1    col2"',
+      "a two-space awk field separator": "awk -F'  ' '{print $2}' /tmp/report",
+    };
+
+    for (const [name, script] of Object.entries(CASES)) {
+      const forge = fakeFetch({ body: scriptResponse(script) });
+
+      const result = (await run(
+        "get_deployment_script",
+        SITE_ARGS,
+        forge,
+      )) as ScriptResult;
+
+      expect(result.deployment_script.content, name).toBe(script);
+      expect(result.deployment_script.altered, name).toBe(false);
+      expect(result.notes, name).toEqual([]);
+    }
+  });
+
+  it("keeps a tab, and still refuses the control characters around it", async () => {
+    const ESC = String.fromCodePoint(0x1b);
+    const NUL = String.fromCodePoint(0x00);
+    const BEL = String.fromCodePoint(0x07);
+    const forge = fakeFetch({
+      body: scriptResponse(`if true; then\n\techo${ESC}${NUL}${BEL}\ttabbed\nfi`),
+    });
+
+    const result = (await run(
+      "get_deployment_script",
+      SITE_ARGS,
+      forge,
+    )) as ScriptResult;
+
+    // The tab is ordinary code content and advances the pen; ESC, NUL and BEL drive
+    // a terminal rather than draw on it, and are spaced exactly as they always were.
+    expect(result.deployment_script.content).toBe(
+      "if true; then\n\techo   \ttabbed\nfi",
+    );
+    // And the reader is told the copy is no longer byte-for-byte, without truncation.
+    expect(result.deployment_script.altered).toBe(true);
+    expect(result.deployment_script.truncated).toBe(false);
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toContain("not a byte-for-byte copy");
+  });
+
+  it("says the content was altered even when nothing was truncated", async () => {
+    // A zero-width space inside a command: nothing is cut, the line count is right,
+    // `truncated` is false — and without this note the result reads as a faithful
+    // copy of a command the account owner never wrote.
+    const ZWSP = "\u200B";
+    const forge = fakeFetch({
+      body: scriptResponse(`php artisan${ZWSP}migrate --force`),
+    });
+
+    const result = (await run(
+      "get_deployment_script",
+      SITE_ARGS,
+      forge,
+    )) as ScriptResult;
+
+    expect(result.deployment_script.content).toBe("php artisanmigrate --force");
+    expect(result.deployment_script.truncated).toBe(false);
+    expect(result.deployment_script.altered).toBe(true);
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toContain("not a byte-for-byte copy");
+    expect(result.notes[0]).toContain("exactly as Forge sent them");
+  });
+
+  it("reports alteration and truncation as two separate notes", async () => {
+    const line = `php artisan queue:work --queue=${"q".repeat(80)}`;
+    const ZWSP = "\u200B";
+    const forge = fakeFetch({
+      body: scriptResponse(
+        `${Array.from({ length: 5_000 }, () => line).join("\n")}${ZWSP}`,
+      ),
+    });
+
+    const result = (await run(
+      "get_deployment_script",
+      SITE_ARGS,
+      forge,
+    )) as ScriptResult;
+
+    // Not all of it, and not byte-for-byte either: two different claims, said twice.
+    expect(result.deployment_script.truncated).toBe(true);
+    expect(result.deployment_script.altered).toBe(true);
+    expect(result.notes).toHaveLength(2);
+    expect(result.notes[0]).toContain("do not describe this as the whole script");
+    expect(result.notes[1]).toContain("not a byte-for-byte copy");
+  });
+
+  it("says a script that neutralised away to nothing was altered", async () => {
+    // Forge sent something; nothing visible survived it. `content: null` beside
+    // `altered: false` would say Forge sent nothing, which is a different fact.
+    const forge = fakeFetch({
+      body: scriptResponse("\u200B\u200D\uFEFF"),
+    });
+
+    const result = (await run(
+      "get_deployment_script",
+      SITE_ARGS,
+      forge,
+    )) as ScriptResult;
+
+    expect(result.deployment_script.content).toBeNull();
+    expect(result.deployment_script.altered).toBe(true);
+    expect(result.notes).toHaveLength(1);
   });
 
   it("unwraps the resource envelope instead of handing back the blob", async () => {
@@ -2134,6 +2289,7 @@ describe("get_deployment_script — the script the next deploy runs", () => {
       "auto_source",
       "line_count",
       "truncated",
+      "altered",
     ]);
   });
 

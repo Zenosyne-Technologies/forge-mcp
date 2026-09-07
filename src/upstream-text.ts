@@ -15,9 +15,11 @@
  * line structure IS its content: a site's deployment script, where collapsing the
  * newlines runs five commands together into a sentence no operator can read back.
  * They are variants and not two rules: both are built from the single allowlist
- * string below, and the second spares exactly one code point (U+000A) more than the
- * first. Everything invisible is removed by both, identically — which is asserted,
- * character by character, rather than asserted in this comment.
+ * string below, and the second spares exactly the three code points in
+ * `SCRIPT_SPARED` — space, tab and line feed, the whitespace of ordinary code — more
+ * than the first. Everything invisible is removed by both, identically — which is
+ * asserted, character by character over the whole code space, rather than asserted
+ * in this comment.
  *
  * The rule is an ALLOWLIST, and that is the load-bearing decision. The blacklist it
  * replaces (`\p{Cc}\p{Cf}` plus two separators) was not merely incomplete, it was
@@ -118,16 +120,39 @@ const ZERO_WIDTH = /\p{Default_Ignorable_Code_Point}/gu;
  *
  * Exported so a test can assert both patterns are built from this and not from a
  * copy. The sweep in `test/upstream-text.test.ts` then proves it behaviourally, by
- * requiring the two functions to agree on every character that is not a newline.
+ * requiring the two functions to agree on every code point outside `SCRIPT_SPARED`.
  */
 export const ALLOWED_VISIBLE_CLASSES = "\\p{L}\\p{N}\\p{P}\\p{S}\\p{M}";
+
+/**
+ * The entire difference between the two rules, as the characters themselves.
+ *
+ * U+0020 SPACE, U+0009 TAB and U+000A LINE FEED: the whitespace an author of shell
+ * actually types, and the only characters the script variant admits that the flat
+ * variant does not. Every one of them advances the pen — a space and a tab move it
+ * along the line, a line feed moves it down — so none of them can be used to hide a
+ * payload the way a zero-width character can, and none of them is ambiguous about
+ * where a line ends the way U+2028, U+0085 or a lone U+000D are.
+ *
+ * Tab is spared for the same reason space is: in a script it is ordinary content.
+ * `\p{Cc}` was denied wholesale because of ESC, NUL and BEL — characters that drive
+ * a terminal — not because of the tab in a Makefile or a heredoc.
+ *
+ * This constant, not a regex literal, is what the script pattern is built from, and
+ * it is exported so the drift sweep can exclude EXACTLY this set from its
+ * character-by-character comparison and assert this set survives byte-for-byte.
+ * Adding a character here without the sweep noticing is therefore not possible: the
+ * sweep reads the same string the pattern does.
+ */
+export const SCRIPT_SPARED = " \t\n";
 
 /**
  * Everything the allowlist denies — optionally sparing the characters in `spared`.
  *
  * `spared` is the ONLY axis on which the two rules below differ, and it is a
  * character-class fragment rather than a boolean so the difference reads as what it
- * is: the script rule admits exactly one code point more than the text rule does.
+ * is: the script rule admits exactly the three code points of `SCRIPT_SPARED` more
+ * than the text rule does.
  *
  * The `u` flag is what makes `\p{...}` mean a Unicode property rather than a literal
  * `p`, what makes an astral code point (a tag character, a supplementary variation
@@ -151,19 +176,37 @@ function denialPattern(spared = ""): RegExp {
 const NOT_VISIBLE_TEXT = denialPattern();
 
 /**
- * The same denial, sparing U+000A LINE FEED and nothing else.
+ * The same denial, sparing exactly `SCRIPT_SPARED` and nothing else.
+ *
+ * Written as `\uXXXX` escapes computed from that string rather than as a literal
+ * `" \\t\\n"`, so there is one place a character can be added to the spared set and
+ * the pattern, the module comment and the drift sweep all read it.
  *
  * One newline character, so that "a line" means the same thing to the model reading
  * the result, to the human auditing the transcript, and to this file. U+2028 LINE
- * SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEXT LINE and a lone U+000D all stay
- * denied: each of them begins a new line in SOME renderer and not in others, and a
- * disagreement about where a line ends is exactly the seam a payload paints forged
- * structure into. A carriage return is the sharpest of them — on a terminal it moves
- * the cursor back over what was already printed, so what is displayed is not what
- * was sent — so the only one that survives here is the one in a CRLF pair, and it
- * survives by being rewritten to a line feed before this pattern ever sees it.
+ * SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEXT LINE, U+000B, U+000C and a lone
+ * U+000D all stay denied: each of them begins a new line in SOME renderer and not in
+ * others, and a disagreement about where a line ends is exactly the seam a payload
+ * paints forged structure into. A carriage return is the sharpest of them — on a
+ * terminal it moves the cursor back over what was already printed, so what is
+ * displayed is not what was sent — so the only one that survives here is the one in
+ * a CRLF pair, and it survives by being rewritten to a line feed before this pattern
+ * ever sees it.
+ *
+ * Horizontal whitespace is a different case entirely, and that is why space and tab
+ * are here. They cannot forge a line, they are what indentation and alignment are
+ * made of, and in a shell script that indentation is frequently the CONTENT — a
+ * heredoc writing an nginx block or a Python body, an `awk -F'  '` whose field
+ * separator is two spaces, an `echo "col1    col2"` whose columns are the point.
  */
-const NOT_VISIBLE_SCRIPT = denialPattern("\\n");
+const NOT_VISIBLE_SCRIPT = denialPattern(
+  [...SCRIPT_SPARED]
+    .map(
+      (char) =>
+        `\\u${(char.codePointAt(0) as number).toString(16).padStart(4, "0")}`,
+    )
+    .join(""),
+);
 
 /**
  * Put one fragment of upstream text into the single, visible, flattened form both
@@ -214,9 +257,9 @@ export function neutraliseUpstreamText(raw: string): string {
  * there, and the only reason to send one is to paint rows, headers or a fake end of
  * output into a field the reader expects to be a single word. In a script a newline
  * is the author's own punctuation. So the difference between the two functions is a
- * judgement about the FIELD, not a relaxation of the rule: `denialPattern("\\n")`
- * spares one character and denies everything the other denies, out of the same
- * allowlist string, so neither can be widened without widening both.
+ * judgement about the FIELD, not a relaxation of the rule: the script pattern spares
+ * the three characters of `SCRIPT_SPARED` and denies everything the other denies,
+ * out of the same allowlist string, so neither can be widened without widening both.
  *
  * What is still removed, unchanged from the flat rule: every
  * `Default_Ignorable_Code_Point` (deleted — the variation selectors, the tag block,
@@ -225,24 +268,43 @@ export function neutraliseUpstreamText(raw: string): string {
  *
  * What is different, and only this:
  *
- *  - CRLF becomes LF first, so a Windows-authored script keeps its lines instead of
- *    growing a space at the end of every one of them. It runs after the zero-width
- *    deletion, so a joiner smuggled between the CR and the LF cannot hide the pair.
- *  - U+000A survives the denial. Nothing else that starts a line does — U+2028,
- *    U+2029, U+0085 and a lone U+000D all become a space, so the result has exactly
- *    one kind of line break in it.
- *  - The collapse is spent in two directions instead of one. Horizontal runs become
- *    a single space, so indentation, alignment and a column of padding cannot be
- *    used to paint a shape. Vertical runs become a single newline, so blank lines
- *    cannot be used to push the visible end of the script off a reader's screen.
+ *  - CRLF becomes LF, so a Windows-authored script keeps its lines instead of
+ *    growing a stray space at the end of every one of them. This step is
+ *    load-bearing precisely BECAUSE nothing collapses afterwards: a CR that is not
+ *    folded into its LF is a denied character that occupied width, so it becomes a
+ *    space, and that space would then survive to the end of every line. It runs
+ *    after the zero-width deletion because a joiner wedged between the CR and the LF
+ *    would otherwise break the pair apart and leave that space behind.
+ *  - `SCRIPT_SPARED` survives the denial: U+0020, U+0009 and U+000A. Nothing else
+ *    that starts a line does — U+2028, U+2029, U+0085, U+000B, U+000C and a lone
+ *    U+000D all become a space, so the result has exactly one kind of line break in
+ *    it. Nothing else that is invisible does either.
+ *  - There is NO whitespace collapse, in either direction. Horizontal runs are kept
+ *    byte-for-byte, because in a script they are content: a heredoc's indentation is
+ *    the file being written, a Python body's indentation is its syntax, the spacing
+ *    inside `echo "col1    col2"` is the output, and `awk -F'  '` is a different
+ *    command from `awk -F' '`. Blank lines are kept for the same reason — they are
+ *    the author's paragraphing, and a rule that removed them turned this project's
+ *    own recorded 16-line Laravel script into 12 lines that read as the whole thing.
  *
- * WHAT THIS COSTS. Indentation does not survive: every line comes back trimmed and
- * flush left, and a heredoc that relied on leading tabs (`<<-`) reads correctly as
- * text but is no longer the bytes the server runs. Blank lines between sections are
- * gone. Both are stated here rather than discovered later — this output is for a
- * reader deciding what a site does on deploy, not a copy to be executed anywhere.
+ * WHAT A COLLAPSE WOULD HAVE BOUGHT, and why it is not worth it. Runs of spaces and
+ * blank lines can be used to paint a shape or to push the visible end of a script
+ * off a reader's screen. But the script is emitted as one JSON string value, whose
+ * newlines arrive as `\n` escapes inside a quoted string, so no amount of whitespace
+ * inside it can break this server's own framing; and `MAX_SCRIPT_CHARS` already caps
+ * how much of anything one call can spend. Trading a correct copy of the script for
+ * a defence the framing and the bound already provide is a bad trade — and silently
+ * altering the one value whose whole purpose is to say what will run is worse than
+ * the shape it prevented.
  *
- * The result is a sequence of non-empty lines a human can see, or the empty string.
+ * WHAT THIS COSTS, stated rather than discovered later. Leading and trailing
+ * whitespace is trimmed off the whole script. A denied character still becomes a
+ * space, so a script containing a NBSP, a lone CR or an ESC does not come back
+ * byte-identical. NFC still runs. None of that is silent: `scriptText` in
+ * `src/tools/common.ts` compares the result with what Forge sent and the tool says
+ * in `notes` when the two differ, exactly as it does for a truncated script.
+ *
+ * The result is the script's own lines and spacing, or the empty string.
  */
 export function neutraliseUpstreamScript(raw: string): string {
   return raw
@@ -250,10 +312,6 @@ export function neutraliseUpstreamScript(raw: string): string {
     .normalize("NFC")
     .replace(/\r\n/g, "\n")
     .replace(NOT_VISIBLE_SCRIPT, " ")
-    // Only spaces and newlines remain: everything else denied became a space, and a
-    // tab was never allowed through in the first place.
-    .replace(/ +/g, " ")
-    .replace(/ ?\n[ \n]*/g, "\n")
     .trim();
 }
 

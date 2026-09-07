@@ -225,9 +225,17 @@ describe("tools/call over the protocol", () => {
     const payload = JSON.parse(textOf(result)) as {
       deployment_script: { content: string; auto_source: boolean };
     };
-    // Over the wire, through the SDK, out the other side: still separate lines.
+    // Over the wire, through the SDK, out the other side: still separate lines,
+    // and still the fixture's own bytes — the indentation inside the artisan block
+    // included, because JSON carries a leading run of spaces as faithfully as it
+    // carries the newline before it.
     expect(payload.deployment_script.content.split("\n")).toContain(
-      "php artisan queue:restart",
+      "    php artisan queue:restart",
+    );
+    expect(payload.deployment_script.content).toBe(
+      fixture<{ data: { attributes: { content: string } } }>(
+        "deployment-script-single",
+      ).data.attributes.content,
     );
     expect(payload.deployment_script.auto_source).toBe(true);
     expect(forge.calls[0]?.url).toContain(
